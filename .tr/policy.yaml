@@ -1,0 +1,132 @@
+# read-only.yaml
+#
+# Allow all read operations; deny all writes, executions, and mutations.
+#
+# This policy is appropriate for:
+#   - Research agents that only need to gather information
+#   - Monitoring agents that observe but do not act
+#   - Agents running in a sandboxed review environment
+#   - Any agent you want to limit to observation-only mode
+#
+# "Read" operations covered:
+#   - MCP: read_file, list_directory, web_search, web_fetch, database queries
+#   - HTTP: GET requests only
+#
+# "Write" operations blocked:
+#   - MCP: write_file, create_directory, execute_command, send_*, delete_*
+#   - HTTP: POST, PUT, DELETE, PATCH
+#
+# Usage:
+#   cp examples/policies/read-only.yaml .tr/policy.yaml
+#   relic policy validate
+#   relic run -- my_agent
+
+version: "1"
+
+agent:
+  name: "read-only-agent"
+  version: "1.0.0"
+
+mode: enforce
+default: deny
+
+redaction:
+  keys:
+    - password
+    - token
+    - api_key
+    - apikey
+    - secret
+    - access_token
+    - private_key
+  headers:
+    - Authorization
+    - X-Api-Key
+    - X-Auth-Token
+    - Cookie
+
+rules:
+  # -------------------------------------------------------------------------
+  # MCP reads — all common read-style tool names
+  # -------------------------------------------------------------------------
+  - id: allow-file-reads
+    protocol: mcp
+    method: tool_call
+    target: "{read_file,list_directory,get_file_info,search_files,directory_tree,stat_file}"
+    action: allow
+
+  - id: allow-web-reads
+    protocol: mcp
+    method: tool_call
+    target: "{web_search,web_fetch,fetch,search,brave_search,tavily_search,browser_navigate,browser_get_text,browser_get_html,browser_screenshot}"
+    action: allow
+
+  - id: allow-db-reads
+    protocol: mcp
+    method: tool_call
+    target: "{query,read_query,list_tables,describe_table,get_schema,show_tables,explain}"
+    action: allow
+
+  - id: allow-resource-reads
+    protocol: mcp
+    method: resource_read
+    target: "**"
+    action: allow
+
+  - id: allow-prompts
+    protocol: mcp
+    method: prompt_get
+    target: "**"
+    action: allow
+
+  # -------------------------------------------------------------------------
+  # HTTP reads
+  # -------------------------------------------------------------------------
+  - id: allow-http-get
+    protocol: http
+    method: GET
+    target: "**"
+    action: allow
+
+  - id: allow-https-tunnel
+    protocol: https
+    method: CONNECT
+    target: "**"
+    action: allow
+
+  # -------------------------------------------------------------------------
+  # Explicit denials for write categories (belt-and-suspenders before default)
+  # -------------------------------------------------------------------------
+  - id: deny-file-writes
+    protocol: mcp
+    method: tool_call
+    target: "{write_file,create_file,create_directory,move_file,copy_file,delete_file,rename_file,append_file}"
+    action: deny
+
+  - id: deny-shell-execution
+    protocol: mcp
+    method: tool_call
+    target: "{execute_command,run_command,bash,shell,sh,zsh,cmd,powershell,terminal,run_script,exec,spawn}"
+    action: deny
+
+  - id: deny-messaging
+    protocol: mcp
+    method: tool_call
+    target: "{send_email,send_message,send_sms,send_notification,post_*,create_post,publish_*}"
+    action: deny
+
+  - id: deny-db-writes
+    protocol: mcp
+    method: tool_call
+    target: "{write_query,execute,insert,update,delete,drop_*,create_table,alter_*,truncate}"
+    action: deny
+
+  - id: deny-http-writes
+    protocol: http
+    method: "{POST,PUT,DELETE,PATCH,HEAD,OPTIONS}"
+    target: "**"
+    action: deny
+
+constraints:
+  max_actions: 1000
+  max_duration_seconds: 3600   # 1 hour

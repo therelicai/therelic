@@ -1,0 +1,2 @@
+{"v":1,"t":"run","ts":"2026-02-20T02:54:47.464107Z","run":"01KHWFH9N78XYPRXYG8Y0FZGST","agent":"/tmp/test-agent.sh","env":"local","status":"start"}
+{"v":1,"t":"run","ts":"2026-02-20T02:55:38.652516Z","run":"01KHWFH9N78XYPRXYG8Y0FZGST","status":"end","exit":1,"ms":51188,"actions_total":0,"actions_allowed":0,"actions_denied":0}

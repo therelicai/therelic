@@ -1,0 +1,3 @@
+{"v":1,"t":"run","ts":"2026-02-20T03:05:41.978519Z","run":"01KHWG58TTTGMMYQETHS52897Q","agent":"/tmp/test-secret-agent.sh","env":"local","status":"start"}
+{"v":1,"t":"action","ts":"2026-02-20T03:05:42.094299Z","run":"01KHWG58TTTGMMYQETHS52897Q","seq":1,"proto":"mcp","method":"tool_call","target":"secret","params":{"password":"[REDACTED]"},"auth":"allow","rule":"allow-secret"}
+{"v":1,"t":"run","ts":"2026-02-20T03:05:42.095331Z","run":"01KHWG58TTTGMMYQETHS52897Q","status":"end","exit":0,"ms":116,"actions_total":1,"actions_allowed":1,"actions_denied":0}

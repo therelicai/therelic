@@ -1,0 +1,4 @@
+{"v":1,"t":"run","ts":"2026-02-20T02:56:04.226939Z","run":"01KHWFKMM2J5CA3KXQ92HF5V6G","agent":"/tmp/test-agent.sh","env":"local","status":"start"}
+{"v":1,"t":"action","ts":"2026-02-20T02:56:04.241068Z","run":"01KHWFKMM2J5CA3KXQ92HF5V6G","seq":1,"proto":"mcp","method":"tool_call","target":"echo","params":{"message":"hello-proxy"},"auth":"allow","rule":"allow-echo"}
+{"v":1,"t":"action","ts":"2026-02-20T02:56:04.241237Z","run":"01KHWFKMM2J5CA3KXQ92HF5V6G","seq":2,"proto":"mcp","method":"tool_call","target":"add","params":{"a":21,"b":21},"auth":"audit_deny","rule":"default"}
+{"v":1,"t":"run","ts":"2026-02-20T02:56:04.241634Z","run":"01KHWFKMM2J5CA3KXQ92HF5V6G","status":"end","exit":0,"ms":14,"actions_total":2,"actions_allowed":2,"actions_denied":0}

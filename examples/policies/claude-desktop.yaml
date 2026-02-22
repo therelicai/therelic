@@ -1,0 +1,129 @@
+# claude-desktop.yaml
+#
+# Policy for governing Claude Desktop's MCP tool usage.
+#
+# Claude Desktop supports MCP servers configured in
+# ~/Library/Application Support/Claude/claude_desktop_config.json (macOS).
+#
+# This policy is appropriate for a general-purpose Claude assistant that:
+#   - May read and write local files
+#   - May search the web and fetch pages
+#   - Must NOT execute shell commands
+#   - Must NOT send emails or messages autonomously
+#   - Must NOT make API calls that modify external state
+#
+# Usage:
+#   cp examples/policies/claude-desktop.yaml .tr/policy.yaml
+#   relic policy validate
+#   relic run --from-openclaw -- claude    # or your Claude Desktop launch command
+
+version: "1"
+
+agent:
+  name: "claude-desktop"
+  version: "1.0.0"
+
+mode: enforce
+default: deny
+
+redaction:
+  keys:
+    - password
+    - token
+    - api_key
+    - apikey
+    - secret
+    - access_token
+    - private_key
+    - client_secret
+  headers:
+    - Authorization
+    - X-Api-Key
+    - Cookie
+    - Set-Cookie
+
+rules:
+  # -------------------------------------------------------------------------
+  # Web access — read-only
+  # -------------------------------------------------------------------------
+  - id: allow-web-search
+    protocol: mcp
+    method: tool_call
+    target: "{web_search,search,brave_search,tavily_search}"
+    action: allow
+
+  - id: allow-web-fetch
+    protocol: mcp
+    method: tool_call
+    target: "{web_fetch,fetch}"
+    action: allow
+
+  # -------------------------------------------------------------------------
+  # Filesystem — reads allowed, writes allowed for designated work directories
+  # -------------------------------------------------------------------------
+  - id: allow-fs-reads
+    protocol: mcp
+    method: tool_call
+    target: "{read_file,list_directory,get_file_info,search_files}"
+    action: allow
+
+  - id: allow-fs-writes
+    protocol: mcp
+    method: tool_call
+    target: "{write_file,create_directory}"
+    action: allow
+
+  # -------------------------------------------------------------------------
+  # Database reads — allow SELECT-style operations
+  # -------------------------------------------------------------------------
+  - id: allow-db-reads
+    protocol: mcp
+    method: tool_call
+    target: "{query,read_query,list_tables,describe_table,get_schema}"
+    action: allow
+
+  # -------------------------------------------------------------------------
+  # HTTP — allow GET, deny mutations
+  # -------------------------------------------------------------------------
+  - id: allow-http-get
+    protocol: http
+    method: GET
+    target: "**"
+    action: allow
+
+  - id: allow-https-tunnel
+    protocol: https
+    method: CONNECT
+    target: "**"
+    action: allow
+
+  # -------------------------------------------------------------------------
+  # Deny high-risk operations
+  # -------------------------------------------------------------------------
+  - id: deny-shell
+    protocol: mcp
+    method: tool_call
+    target: "{execute_command,run_command,bash,shell,sh,zsh,cmd,terminal,run_script}"
+    action: deny
+
+  - id: deny-db-writes
+    protocol: mcp
+    method: tool_call
+    target: "{write_query,execute,insert,update,delete,drop_table,create_table}"
+    action: deny
+
+  - id: deny-email
+    protocol: mcp
+    method: tool_call
+    target: "{send_email,send_message,gmail_send,outlook_send,send_sms}"
+    action: deny
+
+  - id: deny-http-mutations
+    protocol: http
+    method: "{POST,PUT,DELETE,PATCH}"
+    target: "**"
+    action: deny
+
+constraints:
+  max_actions: 300
+  max_duration_seconds: 7200   # 2 hours

@@ -1,0 +1,4 @@
+servers:
+  - name: test
+    transport: stdio
+    command: "./test/fixtures/mcp-test-server"

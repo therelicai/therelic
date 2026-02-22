@@ -1,0 +1,52 @@
+# openclaw-permissive.yaml
+#
+# Use this policy when you first start governing your OpenClaw agent.
+#
+# Mode: permissive — all actions are ALLOWED, but every action that would be
+# denied by the rules is logged as "would_deny" in the trace. Nothing is
+# blocked. Use relic trace view to see what your agent actually does, then
+# promote to openclaw-production.yaml when you are ready to enforce.
+#
+# Usage:
+#   cp examples/policies/openclaw-permissive.yaml .tr/policy.yaml
+#   relic run --from-openclaw -- openclaw gateway
+#   relic trace view <run-id>
+
+version: "1"
+
+agent:
+  name: "openclaw"
+  version: "1.0.0"
+
+mode: permissive
+default: deny
+
+# Sensitive values are redacted even in permissive mode.
+redaction:
+  keys:
+    - password
+    - passwd
+    - secret
+    - token
+    - api_key
+    - apikey
+    - access_token
+    - refresh_token
+    - private_key
+    - client_secret
+    - auth_token
+  headers:
+    - Authorization
+    - X-Api-Key
+    - X-Auth-Token
+    - Cookie
+    - Set-Cookie
+
+# No rules — every action falls through to the default (deny), which
+# permissive mode converts to "would_deny". This gives you a clean picture
+# of everything your agent does without any filtering noise.
+rules: []
+
+constraints:
+  max_actions: 10000
+  max_duration_seconds: 86400   # 24 hours

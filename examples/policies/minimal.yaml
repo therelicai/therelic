@@ -1,0 +1,33 @@
+# minimal.yaml
+#
+# Minimal valid policy: permit one tool, deny everything else.
+# This is the smallest possible useful policy — a good template for
+# single-purpose agents.
+#
+# Usage:
+#   cp examples/policies/minimal.yaml .tr/policy.yaml
+#   # Edit the 'target' below to match your tool
+#   relic policy validate
+#   relic run -- my_agent
+
+version: "1"
+
+agent:
+  name: "minimal-agent"
+  version: "1.0.0"
+
+mode: enforce
+default: deny
+
+rules:
+  - id: allow-web-search
+    protocol: mcp
+    method: tool_call
+    target: "web_search"
+    action: allow
+
+  - id: allow-read-file
+    protocol: mcp
+    method: tool_call
+    target: "read_file"
+    action: allow

@@ -1,0 +1,128 @@
+# .goreleaser.yaml — The Relic release configuration
+# Run locally:  goreleaser build --snapshot --clean
+# Run release:  goreleaser release --clean  (requires GITHUB_TOKEN)
+version: 2
+
+project_name: relic
+
+before:
+  hooks:
+    # Ensure all Go dependencies are present.
+    - go mod tidy
+
+builds:
+  - id: relic
+    main: ./cmd/relic
+    binary: relic
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    # Embed version and build metadata in the binary.
+    ldflags:
+      - -s -w
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .ShortCommit }}
+      - -X main.date={{ .Date }}
+
+archives:
+  - id: relic
+    ids:
+      - relic
+    # tar.gz for Linux, zip for macOS — common package manager conventions.
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: darwin
+        formats:
+          - zip
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "arm64" }}arm64
+      {{- else }}{{ .Arch }}{{ end }}
+    # Always include these files in every archive.
+    files:
+      - README.md
+      - LICENSE
+      - docs/ARCHITECTURE.md
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+snapshot:
+  # Version string used for --snapshot builds (no git tag required).
+  version_template: "{{ .Tag }}-snapshot-{{ .ShortCommit }}"
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "merge conflict"
+      - Merge pull request
+      - Merge remote-tracking branch
+      - Merge branch
+  groups:
+    - title: "New features"
+      regexp: "^feat"
+      order: 0
+    - title: "Bug fixes"
+      regexp: "^fix"
+      order: 1
+    - title: "Other changes"
+      order: 999
+
+release:
+  github:
+    owner: therelic
+    name: relic
+  # Include pre-release binaries when the tag contains a pre-release suffix.
+  prerelease: auto
+  # Draft releases until manually published — gives a review window.
+  draft: true
+
+# Homebrew tap — uses homebrew_casks (the v2 replacement for the deprecated
+# brews section).  Only published on actual tag releases when
+# HOMEBREW_TAP_TOKEN is available; snapshot builds skip this step.
+homebrew_casks:
+  - name: relic
+    ids:
+      - relic
+    # Binary names to install into $(brew --prefix)/bin/.
+    binaries:
+      - relic
+    homepage: "https://github.com/therelicai/therelic"
+    description: "Authorization and audit for autonomous AI agents"
+    caveats: |
+      Quick start:
+        cd your-agent-project
+        relic init && relic policy init
+        relic run -- <your-agent-command>
+    # Remove macOS quarantine bit so the binary runs without Gatekeeper prompts.
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr",
+              args: ["-dr", "com.apple.quarantine", "#{staged_path}/relic"]
+          end
+    commit_author:
+      name: goreleaserbot
+      email: bot@goreleaser.com
+    repository:
+      owner: therelic
+      name: homebrew-tap
+      branch: main
+      # Requires a HOMEBREW_TAP_TOKEN secret with write access to the tap repo.
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"

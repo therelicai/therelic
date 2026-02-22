@@ -1,0 +1,78 @@
+# openclaw-safe.yaml
+#
+# Safe default policy for an OpenClaw personal assistant.
+#
+# Allows: web browsing, file reads, directory listing
+# Denies: email, calendar writes, shell execution
+# Blocks everything else by default
+#
+# This is a conservative starting point. Review relic trace view after a few
+# runs and add more allow rules for tools your agent legitimately needs.
+#
+# Usage:
+#   cp examples/policies/openclaw-safe.yaml .tr/policy.yaml
+#   relic policy validate
+#   relic run --mode audit --from-openclaw -- openclaw gateway   # test first
+#   relic run --from-openclaw -- openclaw gateway                # enforce
+
+version: "1"
+
+agent:
+  name: "openclaw"
+  version: "1.0.0"
+
+mode: enforce
+default: deny
+
+redaction:
+  keys:
+    - password
+    - token
+    - api_key
+    - secret
+    - access_token
+  headers:
+    - Authorization
+    - X-Api-Key
+    - Cookie
+
+rules:
+  - id: allow-web-search-and-fetch
+    protocol: mcp
+    method: tool_call
+    target: "{web_search,web_fetch,search,fetch}"
+    action: allow
+
+  - id: allow-read-file
+    protocol: mcp
+    method: tool_call
+    target: "read_file"
+    action: allow
+
+  - id: allow-list-directory
+    protocol: mcp
+    method: tool_call
+    target: "list_directory"
+    action: allow
+
+  - id: deny-email
+    protocol: mcp
+    method: tool_call
+    target: "{send_email,send_message,email_*,gmail_*,outlook_*}"
+    action: deny
+
+  - id: deny-calendar-writes
+    protocol: mcp
+    method: tool_call
+    target: "{create_event,update_event,delete_event,calendar_*}"
+    action: deny
+
+  - id: deny-shell
+    protocol: mcp
+    method: tool_call
+    target: "{shell,bash,execute_command,run_command,run_script}"
+    action: deny
+
+constraints:
+  max_actions: 200
+  max_duration_seconds: 3600

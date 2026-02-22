@@ -1,0 +1,50 @@
+# minimal-deny-all.yaml
+#
+# The most restrictive useful policy: deny everything except a single
+# explicitly allowed tool.
+#
+# Use this as a starting point when you want to build up permissions
+# incrementally, or when you need to lock down an agent to exactly one task.
+#
+# This example allows only the "echo" tool. Replace "echo" with the
+# one tool your agent needs, or add more rules for additional tools.
+#
+# Usage:
+#   cp examples/policies/minimal-deny-all.yaml .tr/policy.yaml
+#   # Edit the target below to match your tool name
+#   relic policy validate
+#   relic run -- my_agent
+
+version: "1"
+
+agent:
+  name: "minimal-agent"
+  version: "1.0.0"
+
+mode: enforce
+default: deny
+
+redaction:
+  keys:
+    - password
+    - token
+    - api_key
+    - secret
+  headers:
+    - Authorization
+    - X-Api-Key
+
+rules:
+  # Allow exactly one MCP tool. Replace "echo" with your tool name.
+  # Use glob syntax for multiple tools: target: "{tool_a,tool_b}"
+  - id: allow-single-tool
+    protocol: mcp
+    method: tool_call
+    target: "echo"
+    action: allow
+
+  # Everything else is denied by default (no rule needed — 'default: deny' handles it).
+
+constraints:
+  max_actions: 50
+  max_duration_seconds: 300   # 5 minutes

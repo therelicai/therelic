@@ -1,0 +1,153 @@
+# openclaw-production.yaml
+#
+# Production-grade policy for an OpenClaw personal assistant agent.
+#
+# This policy follows the principle of least privilege:
+#   - Explicitly allow tools the agent legitimately needs
+#   - Explicitly deny the highest-risk categories (shell, email, calendar writes)
+#   - Default-deny everything else
+#   - Redact common secret key names from all traces
+#   - Enforce a per-run action cap and time limit
+#
+# Usage:
+#   cp examples/policies/openclaw-production.yaml .tr/policy.yaml
+#   relic policy validate
+#   relic run --mode audit --from-openclaw -- openclaw gateway   # shadow-test first
+#   relic run --from-openclaw -- openclaw gateway                # enforce
+#
+# To shadow-test without blocking, use --mode audit and check denials with:
+#   relic trace search --auth audit_deny
+
+version: "1"
+
+agent:
+  name: "openclaw"
+  version: "1.0.0"
+
+mode: enforce
+default: deny
+
+redaction:
+  keys:
+    - password
+    - passwd
+    - secret
+    - token
+    - api_key
+    - apikey
+    - access_token
+    - refresh_token
+    - private_key
+    - client_secret
+    - auth_token
+    - ssn
+    - credit_card
+    - card_number
+  headers:
+    - Authorization
+    - X-Api-Key
+    - X-Auth-Token
+    - Cookie
+    - Set-Cookie
+    - Proxy-Authorization
+
+rules:
+  # -------------------------------------------------------------------------
+  # Web browsing and search — low risk, frequently needed
+  # -------------------------------------------------------------------------
+  - id: allow-web-search
+    protocol: mcp
+    method: tool_call
+    target: "{web_search,tavily_search,brave_search,search}"
+    action: allow
+
+  - id: allow-web-fetch
+    protocol: mcp
+    method: tool_call
+    target: "{web_fetch,fetch,browser_navigate,browser_go_to_url}"
+    action: allow
+
+  - id: allow-browser-read
+    protocol: mcp
+    method: tool_call
+    target: "{browser_get_text,browser_screenshot,browser_get_html,browser_find_element}"
+    action: allow
+
+  # -------------------------------------------------------------------------
+  # Filesystem reads — allow, watch for sensitive paths
+  # -------------------------------------------------------------------------
+  - id: allow-fs-reads
+    protocol: mcp
+    method: tool_call
+    target: "{read_file,list_directory,get_file_info,search_files,directory_tree}"
+    action: allow
+
+  # -------------------------------------------------------------------------
+  # Filesystem writes — allow with caution; audit writes to ~ to detect
+  # agents writing credentials or sensitive files
+  # -------------------------------------------------------------------------
+  - id: allow-fs-writes
+    protocol: mcp
+    method: tool_call
+    target: "{write_file,create_directory,move_file,copy_file}"
+    action: allow
+
+  # -------------------------------------------------------------------------
+  # Outbound HTTP reads — allow GET requests
+  # -------------------------------------------------------------------------
+  - id: allow-http-get
+    protocol: http
+    method: GET
+    target: "**"
+    action: allow
+
+  - id: allow-https-connect
+    protocol: https
+    method: CONNECT
+    target: "**"
+    action: allow
+
+  # -------------------------------------------------------------------------
+  # HIGH RISK — explicit deny before default catch-all
+  # -------------------------------------------------------------------------
+
+  # Shell execution — never allow autonomous command execution
+  - id: deny-shell-execution
+    protocol: mcp
+    method: tool_call
+    target: "{execute_command,run_command,shell,bash,sh,zsh,cmd,powershell,terminal,run_script,exec}"
+    action: deny
+
+  # Email sending — user must approve each email manually
+  - id: deny-email-send
+    protocol: mcp
+    method: tool_call
+    target: "{send_email,send_message,compose_email,email_send,gmail_send,outlook_send}"
+    action: deny
+
+  # Calendar writes — prevent autonomous scheduling
+  - id: deny-calendar-writes
+    protocol: mcp
+    method: tool_call
+    target: "{create_event,update_event,delete_event,calendar_write,schedule_meeting}"
+    action: deny
+
+  # Payments and purchases — never allow autonomous financial actions
+  - id: deny-payments
+    protocol: mcp
+    method: tool_call
+    target: "{charge,purchase,buy,pay,transfer,stripe_*,payment_*}"
+    action: deny
+
+  # HTTP mutations — POST/PUT/DELETE/PATCH require explicit allow rules
+  - id: deny-http-mutations
+    protocol: http
+    method: "{POST,PUT,DELETE,PATCH}"
+    target: "**"
+    action: deny
+
+constraints:
+  # Cap at 500 actions per session — prevents runaway agent loops
+  max_actions: 500
+  # 4-hour session limit
+  max_duration_seconds: 14400
