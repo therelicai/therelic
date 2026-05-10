@@ -162,11 +162,11 @@ func (sb *Sandbox) resolvePath(path string) (string, error) {
 
 	resolved := resolveExistingPrefix(cleaned)
 
-	if strings.HasPrefix(resolved, sb.root) {
+	if pathHasParent(resolved, sb.root) {
 		return resolved, nil
 	}
 	for _, m := range sb.mounts {
-		if strings.HasPrefix(resolved, m.hostPath) {
+		if pathHasParent(resolved, m.hostPath) {
 			return resolved, nil
 		}
 	}
@@ -176,11 +176,36 @@ func (sb *Sandbox) resolvePath(path string) (string, error) {
 func (sb *Sandbox) findMount(absPath string) *resolvedMount {
 	for i := range sb.mounts {
 		m := &sb.mounts[i]
-		if strings.HasPrefix(absPath, m.hostPath) || strings.HasPrefix(absPath, m.sandboxPath) {
+		if pathHasParent(absPath, m.hostPath) || pathHasParent(absPath, m.sandboxPath) {
 			return m
 		}
 	}
 	return nil
+}
+
+// pathHasParent reports whether `child` is the same path as `parent` or
+// is a strict descendant of it. It avoids the classic strings.HasPrefix
+// pitfall where `/tmp/foo/bar` looks like it belongs under `/tmp/foo`
+// when in fact `/tmp/foobar` also matches that prefix.
+//
+// Both paths must already be absolute and cleaned (filepath.Clean) so
+// `..` segments don't smuggle escapes past the check.
+func pathHasParent(child, parent string) bool {
+	if parent == "" {
+		return false
+	}
+	if child == parent {
+		return true
+	}
+	// "/" is a degenerate root: anything absolute is below it. We still
+	// require child to be non-empty so an empty string can't masquerade.
+	if parent == string(filepath.Separator) {
+		return len(child) > 0 && child[0] == filepath.Separator
+	}
+	// The separator before the suffix is what distinguishes
+	// "/foo/bar" inside "/foo" (good) from "/foobar" claiming to
+	// match "/foo" (bad).
+	return strings.HasPrefix(child, parent+string(filepath.Separator))
 }
 
 func isWriteOp(op string) bool {
