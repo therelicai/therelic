@@ -88,7 +88,16 @@ func newProxyStdioCmd() *cobra.Command {
 			eng, red, _ := loadEngineRedactorAndPolicy(errW, relicDir, policyPath, flagMode)
 
 			// Open (or create) the trace file — appends to an existing run.
-			tw, err := trace.NewTraceWriter(traceDir, runID)
+			// As with `relic run`, RELIC_TRACE_KEY (hex) turns on the
+			// HMAC chain. Standalone proxy-stdio sessions benefit just
+			// as much: they're typically what wraps a long-running
+			// agent like Claude or Cursor that might generate traces
+			// the user wants to prove weren't edited after the fact.
+			var traceChainKey []byte
+			if masterSecret := loadTraceMasterSecret(errW); len(masterSecret) > 0 {
+				traceChainKey = trace.GenerateChainKey(runID, masterSecret)
+			}
+			tw, err := trace.NewTraceWriterWithKey(traceDir, runID, traceChainKey)
 			if err != nil {
 				return fmt.Errorf("proxy-stdio: trace writer: %w", err)
 			}

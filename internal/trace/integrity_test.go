@@ -2,11 +2,32 @@ package trace
 
 import (
 	"encoding/json"
+	"errors"
+	"strings"
 	"testing"
 )
 
+// sealForTest is the test surface for the writer-side sealing logic.
+// We reuse sealEventLine directly so the tests verify the exact bytes
+// the runtime will produce — anything that splits the writer and the
+// verifier into separate canonicalisation paths is the bug we just
+// fixed and we don't want to reintroduce it.
+func sealForTest(t *testing.T, chain *IntegrityChain, obj map[string]any) []byte {
+	t.Helper()
+	canonical, err := json.Marshal(obj)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	sealed, err := sealEventLine(chain, canonical)
+	if err != nil {
+		t.Fatalf("seal: %v", err)
+	}
+	return sealed
+}
+
 func TestIntegrityChain_SealAndVerify(t *testing.T) {
 	key := []byte("test-secret-key-32bytes-minimum!")
+	chain := NewIntegrityChain(key)
 
 	events := []map[string]any{
 		{"t": "run", "status": "start", "run": "R001"},
@@ -14,141 +35,83 @@ func TestIntegrityChain_SealAndVerify(t *testing.T) {
 		{"t": "action", "target": "add", "auth": "deny", "run": "R001"},
 		{"t": "run", "status": "end", "run": "R001"},
 	}
-
-	chain := NewIntegrityChain(key)
-	var rawEvents []json.RawMessage
-
+	var raw [][]byte
 	for _, ev := range events {
-		canonical, _ := json.Marshal(ev)
-		hmacStr := chain.Seal(canonical)
-		ev["hmac"] = hmacStr
-		full, _ := json.Marshal(ev)
-		rawEvents = append(rawEvents, full)
+		raw = append(raw, sealForTest(t, chain, ev))
 	}
-
-	if err := VerifyChain(rawEvents, key); err != nil {
+	if err := VerifyChain(raw, key); err != nil {
 		t.Fatalf("VerifyChain: %v", err)
 	}
 }
 
 func TestIntegrityChain_DetectsTampering(t *testing.T) {
 	key := []byte("test-secret-key-32bytes-minimum!")
-
-	events := []map[string]any{
-		{"t": "run", "status": "start", "run": "R001"},
-		{"t": "action", "target": "echo", "auth": "allow", "run": "R001"},
-		{"t": "action", "target": "shell", "auth": "deny", "run": "R001"},
-	}
-
 	chain := NewIntegrityChain(key)
-	var rawEvents []json.RawMessage
 
-	for _, ev := range events {
-		canonical, _ := json.Marshal(ev)
-		hmacStr := chain.Seal(canonical)
-		ev["hmac"] = hmacStr
-		full, _ := json.Marshal(ev)
-		rawEvents = append(rawEvents, full)
+	raw := [][]byte{
+		sealForTest(t, chain, map[string]any{"t": "run", "status": "start", "run": "R001"}),
+		sealForTest(t, chain, map[string]any{"t": "action", "target": "echo", "auth": "allow", "run": "R001"}),
+		sealForTest(t, chain, map[string]any{"t": "action", "target": "shell", "auth": "deny", "run": "R001"}),
 	}
 
-	tampered := map[string]any{
-		"t": "action", "target": "echo", "auth": "deny", "run": "R001",
-		"hmac": "",
-	}
-	var origEvent map[string]any
-	json.Unmarshal(rawEvents[1], &origEvent)
-	tampered["hmac"] = origEvent["hmac"]
-	rawEvents[1], _ = json.Marshal(tampered)
+	// Swap "allow" → "deny" on event 1 while keeping the existing MAC.
+	raw[1] = []byte(strings.Replace(string(raw[1]), `"auth":"allow"`, `"auth":"deny"`, 1))
 
-	if err := VerifyChain(rawEvents, key); err == nil {
-		t.Error("expected chain verification to fail after tampering")
+	err := VerifyChain(raw, key)
+	if err == nil {
+		t.Fatal("expected chain verification to fail after tampering")
+	}
+	if !errors.Is(err, ErrChainMismatch) {
+		t.Fatalf("expected ErrChainMismatch, got %v", err)
 	}
 }
 
 func TestIntegrityChain_DetectsInsertion(t *testing.T) {
 	key := []byte("test-secret-key-32bytes-minimum!")
-
-	events := []map[string]any{
-		{"t": "run", "status": "start", "run": "R001"},
-		{"t": "run", "status": "end", "run": "R001"},
-	}
-
 	chain := NewIntegrityChain(key)
-	var rawEvents []json.RawMessage
 
-	for _, ev := range events {
-		canonical, _ := json.Marshal(ev)
-		hmacStr := chain.Seal(canonical)
-		ev["hmac"] = hmacStr
-		full, _ := json.Marshal(ev)
-		rawEvents = append(rawEvents, full)
-	}
+	start := sealForTest(t, chain, map[string]any{"t": "run", "status": "start", "run": "R001"})
+	end := sealForTest(t, chain, map[string]any{"t": "run", "status": "end", "run": "R001"})
 
+	// Forge a "valid-looking" event sealed against a clean chain — it
+	// would pass on its own but not when spliced into a real chain
+	// because the prevHMAC at insertion time won't match.
 	fakeChain := NewIntegrityChain(key)
-	fakeEv := map[string]any{"t": "action", "target": "shell_exec", "auth": "allow", "run": "R001"}
-	fakeCanonical, _ := json.Marshal(fakeEv)
-	fakeEv["hmac"] = fakeChain.Seal(fakeCanonical)
-	fakeRaw, _ := json.Marshal(fakeEv)
+	fakeEv := sealForTest(t, fakeChain, map[string]any{"t": "action", "target": "shell_exec", "auth": "allow", "run": "R001"})
 
-	insertedEvents := make([]json.RawMessage, 3)
-	insertedEvents[0] = rawEvents[0]
-	insertedEvents[1] = fakeRaw
-	insertedEvents[2] = rawEvents[1]
-
-	if err := VerifyChain(insertedEvents, key); err == nil {
-		t.Error("expected chain verification to fail after insertion")
+	inserted := [][]byte{start, fakeEv, end}
+	if err := VerifyChain(inserted, key); err == nil {
+		t.Fatal("expected chain verification to fail after insertion")
 	}
 }
 
 func TestIntegrityChain_DetectsDeletion(t *testing.T) {
 	key := []byte("test-secret-key-32bytes-minimum!")
-
-	events := []map[string]any{
-		{"t": "run", "status": "start", "run": "R001"},
-		{"t": "action", "target": "echo", "auth": "allow", "run": "R001"},
-		{"t": "action", "target": "secret", "auth": "deny", "run": "R001"},
-		{"t": "run", "status": "end", "run": "R001"},
-	}
-
 	chain := NewIntegrityChain(key)
-	var rawEvents []json.RawMessage
 
-	for _, ev := range events {
-		canonical, _ := json.Marshal(ev)
-		hmacStr := chain.Seal(canonical)
-		ev["hmac"] = hmacStr
-		full, _ := json.Marshal(ev)
-		rawEvents = append(rawEvents, full)
+	raw := [][]byte{
+		sealForTest(t, chain, map[string]any{"t": "run", "status": "start", "run": "R001"}),
+		sealForTest(t, chain, map[string]any{"t": "action", "target": "echo", "auth": "allow", "run": "R001"}),
+		sealForTest(t, chain, map[string]any{"t": "action", "target": "secret", "auth": "deny", "run": "R001"}),
+		sealForTest(t, chain, map[string]any{"t": "run", "status": "end", "run": "R001"}),
 	}
 
-	deletedEvents := []json.RawMessage{rawEvents[0], rawEvents[1], rawEvents[3]}
-
-	if err := VerifyChain(deletedEvents, key); err == nil {
-		t.Error("expected chain verification to fail after deletion")
+	deleted := [][]byte{raw[0], raw[1], raw[3]}
+	if err := VerifyChain(deleted, key); err == nil {
+		t.Fatal("expected chain verification to fail after deletion")
 	}
 }
 
 func TestIntegrityChain_WrongKey(t *testing.T) {
 	key1 := []byte("correct-key-for-signing-events!")
 	key2 := []byte("wrong-key-used-for-verification")
-
-	events := []map[string]any{
-		{"t": "run", "status": "start", "run": "R001"},
-	}
-
 	chain := NewIntegrityChain(key1)
-	var rawEvents []json.RawMessage
 
-	for _, ev := range events {
-		canonical, _ := json.Marshal(ev)
-		hmacStr := chain.Seal(canonical)
-		ev["hmac"] = hmacStr
-		full, _ := json.Marshal(ev)
-		rawEvents = append(rawEvents, full)
+	raw := [][]byte{
+		sealForTest(t, chain, map[string]any{"t": "run", "status": "start", "run": "R001"}),
 	}
-
-	if err := VerifyChain(rawEvents, key2); err == nil {
-		t.Error("expected chain verification to fail with wrong key")
+	if err := VerifyChain(raw, key2); err == nil {
+		t.Fatal("expected chain verification to fail with wrong key")
 	}
 }
 
@@ -168,10 +131,75 @@ func TestGenerateChainKey_Deterministic(t *testing.T) {
 
 func TestIntegrityChain_MissingHMACField(t *testing.T) {
 	key := []byte("test-key")
-	rawEvents := []json.RawMessage{
-		json.RawMessage(`{"t":"run","status":"start"}`),
+	raw := [][]byte{
+		[]byte(`{"t":"run","status":"start"}`),
 	}
-	if err := VerifyChain(rawEvents, key); err == nil {
-		t.Error("expected error for missing hmac field")
+	err := VerifyChain(raw, key)
+	if err == nil {
+		t.Fatal("expected error for missing hmac field")
+	}
+	if !errors.Is(err, ErrMissingHMAC) {
+		t.Fatalf("expected ErrMissingHMAC, got %v", err)
+	}
+}
+
+// TestIntegrityChain_StructFieldOrder regression-tests the bug that
+// the previous VerifyChain implementation hid: when the writer emits
+// a struct (RunEvent) whose JSON field order isn't alphabetical, the
+// old map-based VerifyChain would re-marshal the keys in sorted order
+// and recompute a different HMAC. The new VerifyChain extracts the
+// canonical bytes directly so any struct order works.
+func TestIntegrityChain_StructFieldOrder(t *testing.T) {
+	key := []byte("test-secret-key")
+	chain := NewIntegrityChain(key)
+
+	exit := 0
+	dur := 42
+	total, allowed, denied := 5, 4, 1
+	ev := RunEvent{
+		V:              1,
+		T:              "run",
+		TS:             "2024-01-01T00:00:00Z",
+		Run:            "R001",
+		Status:         "end",
+		Exit:           &exit,
+		DurationMs:     &dur,
+		ActionsTotal:   &total,
+		ActionsAllowed: &allowed,
+		ActionsDenied:  &denied,
+	}
+	canonical, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatalf("marshal RunEvent: %v", err)
+	}
+	sealed, err := sealEventLine(chain, canonical)
+	if err != nil {
+		t.Fatalf("seal: %v", err)
+	}
+	if err := VerifyChain([][]byte{sealed}, key); err != nil {
+		t.Fatalf("VerifyChain over struct-marshalled event: %v", err)
+	}
+}
+
+func TestSplitSealedLine_Malformed(t *testing.T) {
+	cases := map[string]string{
+		"not-object":          `"hello"`,
+		"unterminated":        `{"t":"run","hmac":"abc`,
+		"missing-hmac":        `{"t":"run","other":"x"}`,
+		"non-hex-mac":         `{"t":"run","hmac":"not-hex!"}`,
+		"empty-with-no-hmac":  `{}`,
+		"empty-object-w-hmac": `{"hmac":"deadbeef"}`,
+	}
+	for name, in := range cases {
+		_, _, err := splitSealedLine([]byte(in))
+		if name == "empty-object-w-hmac" {
+			if err != nil {
+				t.Errorf("case %q: expected success, got %v", name, err)
+			}
+			continue
+		}
+		if err == nil {
+			t.Errorf("case %q: expected error, got nil", name)
+		}
 	}
 }

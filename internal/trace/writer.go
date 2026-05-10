@@ -82,6 +82,12 @@ type PolicyReloadEvent struct {
 
 // TraceWriter appends NDJSON events to an append-only .trtrace file.
 // Writes are buffered and fsynced on a 100ms interval or on Close().
+//
+// When a chain is attached (NewTraceWriterWithKey or SetIntegrityKey),
+// every emitted event is sealed with an HMAC that covers the event
+// bytes plus the previous event's HMAC. Tampering with, inserting, or
+// removing any sealed event breaks the chain for every subsequent
+// event — making the trace tamper-evident.
 type TraceWriter struct {
 	mu       sync.Mutex
 	f        *os.File
@@ -89,11 +95,34 @@ type TraceWriter struct {
 	done     chan struct{}
 	closed   bool
 	flushErr error
+	chain    *IntegrityChain
 }
 
 // NewTraceWriter creates or opens the .trtrace file at
 // <traceDir>/<runID>.trtrace and starts the background flush loop.
+// Events written through this writer are NOT sealed; use
+// NewTraceWriterWithKey for tamper-evident traces.
 func NewTraceWriter(traceDir, runID string) (*TraceWriter, error) {
+	return newTraceWriter(traceDir, runID, nil)
+}
+
+// NewTraceWriterWithKey behaves like NewTraceWriter but seals every
+// emitted event with an HMAC chain keyed by chainKey. chainKey is
+// typically derived from a master secret + runID via GenerateChainKey,
+// so the platform can recompute it during upload verification without
+// the runtime needing to ship the raw key over the wire.
+//
+// Passing a nil or empty chainKey is treated as "no sealing" so the
+// caller can wire this in without conditional branching.
+func NewTraceWriterWithKey(traceDir, runID string, chainKey []byte) (*TraceWriter, error) {
+	var chain *IntegrityChain
+	if len(chainKey) > 0 {
+		chain = NewIntegrityChain(chainKey)
+	}
+	return newTraceWriter(traceDir, runID, chain)
+}
+
+func newTraceWriter(traceDir, runID string, chain *IntegrityChain) (*TraceWriter, error) {
 	if err := os.MkdirAll(traceDir, 0o755); err != nil {
 		return nil, fmt.Errorf("trace: mkdir %s: %w", traceDir, err)
 	}
@@ -105,9 +134,10 @@ func NewTraceWriter(traceDir, runID string) (*TraceWriter, error) {
 	}
 
 	tw := &TraceWriter{
-		f:    f,
-		buf:  make([][]byte, 0, 64),
-		done: make(chan struct{}),
+		f:     f,
+		buf:   make([][]byte, 0, 64),
+		done:  make(chan struct{}),
+		chain: chain,
 	}
 	go tw.flushLoop()
 	return tw, nil
@@ -115,6 +145,12 @@ func NewTraceWriter(traceDir, runID string) (*TraceWriter, error) {
 
 // WriteEvent serializes v to JSON and enqueues it for writing.
 // The caller must ensure v is one of RunEvent or ActionEvent.
+//
+// When a chain is attached, the JSON is rewritten in place to splice
+// an "hmac":"<hex>" field at the end of the event object. The hmac
+// covers the canonical event bytes (without the hmac field) plus the
+// previous event's hmac. Splicing rather than re-marshalling preserves
+// field ordering and avoids a second round trip through encoding/json.
 func (tw *TraceWriter) WriteEvent(event any) error {
 	line, err := json.Marshal(event)
 	if err != nil {
@@ -126,8 +162,38 @@ func (tw *TraceWriter) WriteEvent(event any) error {
 	if tw.closed {
 		return fmt.Errorf("trace: writer is closed")
 	}
+	if tw.chain != nil {
+		sealed, err := sealEventLine(tw.chain, line)
+		if err != nil {
+			return fmt.Errorf("trace: seal: %w", err)
+		}
+		line = sealed
+	}
 	tw.buf = append(tw.buf, line)
 	return nil
+}
+
+// sealEventLine computes the chain HMAC over the unsealed event bytes
+// and returns the same JSON object with an `hmac` field appended.
+// The input MUST be a JSON object ending in '}' — all of our typed
+// events satisfy that. We never re-parse the bytes so the field order
+// the runtime emits is preserved exactly.
+func sealEventLine(chain *IntegrityChain, line []byte) ([]byte, error) {
+	if len(line) < 2 || line[len(line)-1] != '}' {
+		return nil, fmt.Errorf("event is not a JSON object")
+	}
+	mac := chain.Seal(line)
+	// Empty object {"hmac":"…"} vs. populated {"a":1,"hmac":"…"} — the
+	// only difference is a leading comma for the populated case.
+	out := make([]byte, 0, len(line)+80)
+	out = append(out, line[:len(line)-1]...)
+	if len(line) > 2 {
+		out = append(out, ',')
+	}
+	out = append(out, '"', 'h', 'm', 'a', 'c', '"', ':', '"')
+	out = append(out, mac...)
+	out = append(out, '"', '}')
+	return out, nil
 }
 
 // WriteRunStart emits a run-start event.

@@ -14,6 +14,7 @@ import (
 
 	"github.com/therelicai/therelic/internal/config"
 	"github.com/therelicai/therelic/internal/delegation"
+	"github.com/therelicai/therelic/internal/exfiltration"
 	"github.com/therelicai/therelic/internal/policy"
 	"github.com/therelicai/therelic/internal/proxy"
 	"github.com/therelicai/therelic/internal/redact"
@@ -199,7 +200,15 @@ func runAgent(errW io.Writer, args []string, opts runOptions) error {
 	}
 
 	// Create trace writer — creates .tr/traces/ if needed.
-	tw, err := trace.NewTraceWriter(opts.traceDir, runID)
+	// When RELIC_TRACE_KEY is set, the writer seals every event with
+	// an HMAC chain so the platform (or `relic trace verify`) can
+	// detect tampering. The per-run key is derived from the master
+	// secret + runID; the runtime never ships the raw key.
+	var traceChainKey []byte
+	if masterSecret := loadTraceMasterSecret(errW); len(masterSecret) > 0 {
+		traceChainKey = trace.GenerateChainKey(runID, masterSecret)
+	}
+	tw, err := trace.NewTraceWriterWithKey(opts.traceDir, runID, traceChainKey)
 	if err != nil {
 		return fmt.Errorf("run: create trace writer: %w", err)
 	}
@@ -313,12 +322,37 @@ func runAgent(errW io.Writer, args []string, opts runOptions) error {
 		wiring.proxy.SetSandbox(sb)
 	}
 
+	// Attach sequence anomaly detector to MCP proxy if rules are configured.
+	if wiring != nil && loadedPolicy != nil && len(loadedPolicy.Sequences.Rules) > 0 {
+		det := policy.NewSequenceDetector(loadedPolicy.Sequences)
+		wiring.proxy.SetSequenceDetector(det)
+		fmt.Fprintf(errW, "relic: sequence detector active (%d rules, window=%d)\n",
+			len(loadedPolicy.Sequences.Rules), loadedPolicy.Sequences.Window)
+	}
+
+	// Exfiltration guard wiring.
+	var exfilGuard *exfiltration.Guard
+	if loadedPolicy != nil && loadedPolicy.Exfiltration.Enabled {
+		exfilGuard = exfiltration.NewGuard(loadedPolicy.Exfiltration)
+		if exfilGuard != nil {
+			if wiring != nil {
+				wiring.proxy.SetExfiltrationGuard(exfilGuard)
+			}
+			fmt.Fprintf(errW, "relic: exfiltration guard active\n")
+		}
+	}
+
 	// Start the HTTP metadata logger and set HTTP_PROXY / HTTPS_PROXY.
 	httpW := startHTTPLogger(runID, eng, red, tw, &stats, errW)
 
 	// Apply network policy to the HTTP logger.
 	if httpW != nil && loadedPolicy != nil && (len(loadedPolicy.Network.DNSAllow) > 0 || len(loadedPolicy.Network.DNSDeny) > 0) {
 		httpW.logger.SetNetworkPolicy(loadedPolicy.Network.DNSAllow, loadedPolicy.Network.DNSDeny)
+	}
+
+	// Attach exfiltration guard to the HTTP logger.
+	if httpW != nil && exfilGuard != nil {
+		httpW.logger.SetExfiltrationGuard(exfilGuard)
 	}
 
 	// Build child process.
@@ -531,6 +565,9 @@ func maybeStartProxy(
 	}
 
 	p := proxy.NewMCPProxy(runID, srv.Command, srv.Args, eng, red, onAction)
+	if srv.Integrity != nil {
+		p.SetIntegrity(srv.Integrity)
+	}
 	if err := p.Start(); err != nil {
 		fmt.Fprintf(errW, "relic: warning: mcp proxy start: %v\n", err)
 		return nil
