@@ -1,0 +1,12 @@
+The Relic — Mediation Layer
+Copyright 2026 The Relic AI, Inc.
+
+This product is developed by The Relic AI, Inc. (https://therelic.dev/).
+
+This product includes software developed by third parties; see the
+go.sum manifest in the repository root for the authoritative list of
+direct and transitive dependencies and their respective licenses.
+
+"The Relic" and the Relic shield logo are trademarks of The Relic AI,
+Inc. The Apache License 2.0 does not grant permission to use these
+trademarks. See TRADEMARKS.md for details.

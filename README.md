@@ -202,4 +202,5 @@ See **[docs/quickstart-openclaw.md](docs/quickstart-openclaw.md)** for the full 
 
 ## License
 
-MIT
+Apache License 2.0. See [LICENSE](LICENSE), [NOTICE](NOTICE), and
+[TRADEMARKS.md](TRADEMARKS.md) for the full terms and trademark policy.
