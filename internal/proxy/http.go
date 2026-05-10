@@ -18,6 +18,32 @@ import (
 	"github.com/therelicai/therelic/internal/trace"
 )
 
+// httpProxyTransport is the RoundTripper used to forward plaintext HTTP
+// requests upstream. Building a dedicated Transport (rather than reusing
+// http.DefaultTransport) lets us bound dial, TLS handshake, response
+// header, and idle timeouts, so a slow / hostile upstream can't pin the
+// proxy goroutine indefinitely.
+var httpProxyTransport = &http.Transport{
+	Proxy: http.ProxyFromEnvironment,
+	DialContext: (&net.Dialer{
+		Timeout:   10 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}).DialContext,
+	ForceAttemptHTTP2:     true,
+	MaxIdleConns:          50,
+	MaxIdleConnsPerHost:   10,
+	IdleConnTimeout:       60 * time.Second,
+	TLSHandshakeTimeout:   10 * time.Second,
+	ExpectContinueTimeout: 1 * time.Second,
+	ResponseHeaderTimeout: 30 * time.Second,
+}
+
+// maxResponseBytes caps how much body we'll relay from an upstream HTTP
+// response back to the agent. 50 MiB is enormous for any reasonable
+// tool call response while still preventing OOM from a malicious or
+// runaway upstream streaming forever.
+const maxResponseBytes = 50 * 1024 * 1024
+
 // HTTPLogger is a forward proxy that logs HTTP/HTTPS metadata for audit.
 //
 // Architecture §6.1:
@@ -71,7 +97,13 @@ func (h *HTTPLogger) Start() (port int, err error) {
 		return 0, fmt.Errorf("http logger: listen: %w", err)
 	}
 	h.listener = ln
-	h.server = &http.Server{Handler: h}
+	h.server = &http.Server{
+		Handler: h,
+		// Bound the time we'll wait for an agent's request headers
+		// before tearing the connection down. Without this, a stuck
+		// agent connection holds a goroutine forever.
+		ReadHeaderTimeout: 10 * time.Second,
+	}
 	go h.server.Serve(ln) //nolint:errcheck
 	return ln.Addr().(*net.TCPAddr).Port, nil
 }
@@ -157,9 +189,13 @@ func (h *HTTPLogger) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	outReq.Header.Del("Proxy-Authenticate")
 	outReq.Header.Del("Proxy-Authorization")
 
-	resp, err := http.DefaultTransport.RoundTrip(outReq)
+	resp, err := httpProxyTransport.RoundTrip(outReq)
 	if err != nil {
-		http.Error(w, "bad gateway: "+err.Error(), http.StatusBadGateway)
+		// Don't leak the transport error to the agent — DNS failures,
+		// internal IPs, and OS-level error strings all surface here
+		// and an adversarial agent can use them for fingerprinting.
+		// The detail is still recorded in the trace and proxy logs.
+		http.Error(w, "bad gateway", http.StatusBadGateway)
 		h.emit(seq, "http", r.Method, target, paramsJSON, result)
 		return
 	}
@@ -167,14 +203,16 @@ func (h *HTTPLogger) handleHTTP(w http.ResponseWriter, r *http.Request) {
 
 	h.emit(seq, "http", r.Method, target, paramsJSON, result)
 
-	// Copy response to client.
 	for k, vs := range resp.Header {
 		for _, v := range vs {
 			w.Header().Add(k, v)
 		}
 	}
 	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body) //nolint:errcheck
+	// LimitReader caps the relayed body so an upstream that streams
+	// forever (or an attacker's gzip bomb pre-expansion) can't exhaust
+	// the proxy's memory.
+	io.Copy(w, io.LimitReader(resp.Body, maxResponseBytes)) //nolint:errcheck
 }
 
 // ---------------------------------------------------------------------------
@@ -206,10 +244,11 @@ func (h *HTTPLogger) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Dial the real server.
 	serverConn, err := net.DialTimeout("tcp", target, 10*time.Second)
 	if err != nil {
-		http.Error(w, "bad gateway: "+err.Error(), http.StatusBadGateway)
+		// Same reasoning as the plaintext path — don't leak the
+		// dial error message to the agent. Logging happens server-side.
+		http.Error(w, "bad gateway", http.StatusBadGateway)
 		return
 	}
 	defer serverConn.Close()

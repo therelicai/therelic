@@ -538,13 +538,34 @@ func (p *MCPProxy) writeToServer(line []byte) error {
 	return nil
 }
 
+// maxServerLineBytes caps how many bytes we read from the wrapped MCP
+// server before a newline must appear. A misbehaving (or malicious)
+// server can otherwise stream forever without a delimiter and exhaust
+// memory. 4 MiB matches the agent-side scanner cap and is enough for
+// the largest tool result we've ever observed in practice.
+const maxServerLineBytes = 4 * 1024 * 1024
+
 // readFromServer reads one complete JSON-RPC line from the server.
 // The returned slice includes the trailing newline so it can be written
-// directly to the agent's output.
+// directly to the agent's output. Lines longer than maxServerLineBytes
+// abort the proxy — relaying garbage to the agent is strictly worse
+// than terminating the session.
 func (p *MCPProxy) readFromServer() ([]byte, error) {
-	line, err := p.procReader.ReadBytes('\n')
-	if err != nil {
-		return nil, fmt.Errorf("mcp proxy: read from server: %w", err)
+	var buf []byte
+	for {
+		b, err := p.procReader.ReadByte()
+		if err != nil {
+			if len(buf) > 0 {
+				return buf, nil
+			}
+			return nil, fmt.Errorf("mcp proxy: read from server: %w", err)
+		}
+		buf = append(buf, b)
+		if b == '\n' {
+			return buf, nil
+		}
+		if len(buf) > maxServerLineBytes {
+			return nil, fmt.Errorf("mcp proxy: server line exceeded %d bytes (no newline) — refusing to forward", maxServerLineBytes)
+		}
 	}
-	return line, nil
 }
