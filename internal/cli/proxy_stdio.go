@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/therelicai/therelic/internal/proxy"
 	"github.com/therelicai/therelic/internal/trace"
@@ -37,10 +38,11 @@ import (
 //	RELIC_POLICY     — policy file path (overridden by --policy)
 func newProxyStdioCmd() *cobra.Command {
 	var (
-		flagRunID    string
-		flagTraceDir string
-		flagPolicy   string
-		flagMode     string
+		flagRunID     string
+		flagTraceDir  string
+		flagPolicy    string
+		flagMode      string
+		flagAgentName string
 	)
 
 	cmd := &cobra.Command{
@@ -83,7 +85,7 @@ func newProxyStdioCmd() *cobra.Command {
 			relicDir := filepath.Dir(traceDir)
 			errW := cmd.ErrOrStderr()
 
-			eng, red := loadEngineAndRedactor(errW, relicDir, policyPath, flagMode)
+			eng, red, _ := loadEngineRedactorAndPolicy(errW, relicDir, policyPath, flagMode)
 
 			// Open (or create) the trace file — appends to an existing run.
 			tw, err := trace.NewTraceWriter(traceDir, runID)
@@ -92,16 +94,28 @@ func newProxyStdioCmd() *cobra.Command {
 			}
 			defer tw.Close() //nolint:errcheck
 
+			start := time.Now()
 			if standalone {
-				if err := tw.WriteRunStart(runID, args[0], "", "", ""); err != nil {
+				agent := flagAgentName
+				if agent == "" {
+					agent = os.Getenv("RELIC_AGENT_NAME")
+				}
+				if agent == "" {
+					// Fall back to basename of the wrapped command, never the full path —
+					// the platform uses agent name in S3 storage keys and slashes break them.
+					agent = filepath.Base(args[0])
+				}
+				if err := tw.WriteRunStart(runID, agent, "", "", ""); err != nil {
 					return fmt.Errorf("proxy-stdio: write run start: %w", err)
 				}
 			}
 
+			var stats actionStats
 			onAction := func(ev trace.ActionEvent) {
 				if err := tw.WriteAction(ev); err != nil {
 					fmt.Fprintf(errW, "proxy-stdio: warning: write trace: %v\n", err)
 				}
+				stats.record(ev.Auth)
 			}
 
 			p := proxy.NewMCPProxy(runID, args[0], args[1:], eng, red, onAction)
@@ -113,8 +127,22 @@ func newProxyStdioCmd() *cobra.Command {
 			// Serve until the caller closes its side (stdin → EOF) or the MCP
 			// server exits.  Reads from os.Stdin (agent → proxy), writes to
 			// os.Stdout (proxy → agent).
-			if err := p.ServeStdio(nil, os.Stdin, os.Stdout); err != nil && err != io.EOF {
-				return fmt.Errorf("proxy-stdio: serve: %w", err)
+			serveErr := p.ServeStdio(nil, os.Stdin, os.Stdout)
+
+			// In standalone mode emit a run-end event so the platform can
+			// populate run-summary fields (actions_total/allowed/denied,
+			// duration_ms). When invoked by `relic run` the parent writes its
+			// own run-end so we skip ours to avoid duplicates.
+			if standalone {
+				total, allowed, denied := stats.snapshot()
+				durationMs := int(time.Since(start).Milliseconds())
+				if err := tw.WriteRunEnd(runID, 0, durationMs, total, allowed, denied); err != nil {
+					fmt.Fprintf(errW, "proxy-stdio: warning: write run end: %v\n", err)
+				}
+			}
+
+			if serveErr != nil && serveErr != io.EOF {
+				return fmt.Errorf("proxy-stdio: serve: %w", serveErr)
 			}
 			return nil
 		},
@@ -124,6 +152,7 @@ func newProxyStdioCmd() *cobra.Command {
 	cmd.Flags().StringVar(&flagTraceDir, "trace-dir", "", "Trace directory (default: RELIC_TRACE_DIR env or .tr/traces)")
 	cmd.Flags().StringVar(&flagPolicy, "policy", "", "Policy file path (default: RELIC_POLICY env or .tr/policy.yaml)")
 	cmd.Flags().StringVar(&flagMode, "mode", "", "Override policy mode: enforce | audit | permissive")
+	cmd.Flags().StringVar(&flagAgentName, "agent-name", "", "Agent name to record in trace (default: RELIC_AGENT_NAME env or basename of wrapped command)")
 
 	return cmd
 }

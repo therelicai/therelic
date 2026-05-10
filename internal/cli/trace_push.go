@@ -33,7 +33,7 @@ func newTracePushCmd() *cobra.Command {
 			}
 
 			paths := config.DefaultPaths()
-			traceDir := paths.TraceDir
+			traceDir := paths.TracesDir
 
 			if len(args) > 0 {
 				return pushSingleTrace(cmd, client, traceDir, args[0])
@@ -108,21 +108,35 @@ func extractTraceMeta(path string) api.TraceMeta {
 			break
 		}
 
-		t, _ := event["t"].(string)
-		if t == "run" {
-			meta.AgentName, _ = event["agent"].(string)
-			meta.AgentVersion, _ = event["version"].(string)
-			meta.PolicyHash, _ = event["policy_hash"].(string)
-			meta.Environment, _ = event["env"].(string)
+		// Both run-start and run-end events use t="run" — they are
+		// distinguished by the "status" field. Field names match the JSON
+		// tags on trace.RunEvent (agent_v, policy, actions_total, ms, etc.).
+		if t, _ := event["t"].(string); t != "run" {
+			continue
 		}
-		if t == "run_end" {
-			if v, ok := event["total"].(float64); ok {
+
+		switch event["status"] {
+		case "start":
+			if a, ok := event["agent"].(string); ok && a != "" {
+				meta.AgentName = a
+			}
+			if v, ok := event["agent_v"].(string); ok && v != "" {
+				meta.AgentVersion = v
+			}
+			if p, ok := event["policy"].(string); ok && p != "" {
+				meta.PolicyHash = p
+			}
+			if e, ok := event["env"].(string); ok && e != "" {
+				meta.Environment = e
+			}
+		case "end":
+			if v, ok := event["actions_total"].(float64); ok {
 				meta.ActionsTotal = int(v)
 			}
-			if v, ok := event["allowed"].(float64); ok {
+			if v, ok := event["actions_allowed"].(float64); ok {
 				meta.ActionsAllowed = int(v)
 			}
-			if v, ok := event["denied"].(float64); ok {
+			if v, ok := event["actions_denied"].(float64); ok {
 				meta.ActionsDenied = int(v)
 			}
 			if v, ok := event["ms"].(float64); ok {

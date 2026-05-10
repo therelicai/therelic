@@ -138,9 +138,14 @@ type actionStats struct {
 func (s *actionStats) record(auth string) {
 	s.mu.Lock()
 	s.total++
-	if auth == "deny" {
+	// "deny" in enforce mode and "audit_deny" in audit mode both indicate
+	// the policy decided to refuse the action — they belong in the denied
+	// bucket. "would_deny" (permissive mode) similarly. Anything else
+	// (including "allow" and the empty string) counts as allowed.
+	switch auth {
+	case "deny", "audit_deny", "would_deny":
 		s.denied++
-	} else {
+	default:
 		s.allowed++
 	}
 	s.mu.Unlock()
