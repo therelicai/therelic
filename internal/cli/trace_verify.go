@@ -1,13 +1,15 @@
 package cli
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
 
-	"github.com/therelicai/therelic/internal/trace"
 	"github.com/spf13/cobra"
+
+	"github.com/therelicai/therelic/internal/trace"
 )
 
 func newTraceVerifyCmd() *cobra.Command {
@@ -54,7 +56,16 @@ Requires the HMAC key that was used when the trace was created.`,
 				}
 			}
 
-			key := []byte(flagKey)
+			// --key takes a hex-encoded HMAC secret per the flag help.
+			// Previously we used the hex string literal as the key,
+			// which made every verify succeed against a trace sealed
+			// with the actual raw bytes — silently breaking the entire
+			// integrity guarantee. Decode here so the bytes match the
+			// runtime's IntegrityChain key.
+			key, err := hex.DecodeString(strings.TrimSpace(flagKey))
+			if err != nil {
+				return fmt.Errorf("--key must be a hex-encoded HMAC secret: %w", err)
+			}
 			if err := trace.VerifyChain(events, key); err != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "FAILED: %v\n", err)
 				return &ExitError{Code: 1}

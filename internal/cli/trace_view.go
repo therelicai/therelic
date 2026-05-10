@@ -6,12 +6,21 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
-	"github.com/therelicai/therelic/internal/trace"
 	"github.com/spf13/cobra"
+
+	"github.com/therelicai/therelic/internal/trace"
 )
+
+// validRunID is the conservative set of characters we accept for a
+// CLI-supplied run id. ULIDs are upper-case base32; we also allow
+// dashes and underscores so users can paste custom ids from other
+// runners. Anything outside this set risks path traversal via
+// filepath.Join("traces", runID + ".trtrace").
+var validRunID = regexp.MustCompile(`^[A-Za-z0-9_\-]{1,64}$`)
 
 // ANSI color codes. Disabled automatically when writing to a non-tty or when
 // NO_COLOR is set.
@@ -83,6 +92,9 @@ shown in yellow.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			runID := args[0]
+			if !validRunID.MatchString(runID) {
+				return fmt.Errorf("invalid run id %q (must match %s)", runID, validRunID.String())
+			}
 
 			if flagDir == "" {
 				flagDir = filepath.Join(".tr", "traces")

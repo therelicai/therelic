@@ -382,9 +382,18 @@ func (p *MCPProxy) emit(seq int, mcpMethod, target string, params json.RawMessag
 	} else {
 		redactedParams = params
 	}
+	// _context is agent-supplied metadata that travels with the tool
+	// call (provenance, intent, etc). It's regular JSON from an
+	// untrusted source and can hold the same kinds of secrets we
+	// already redact from params (API tokens accidentally pasted into
+	// "intent" fields, etc), so route it through the same redactor.
 	var ctxVal any
 	if len(ctx) > 0 {
-		ctxVal = ctx
+		if p.redactor != nil {
+			ctxVal = p.redactor.RedactParams(ctx)
+		} else {
+			ctxVal = ctx
+		}
 	}
 	p.onAction(trace.ActionEvent{
 		Run:    p.runID,
