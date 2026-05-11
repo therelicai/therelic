@@ -188,6 +188,32 @@ See **[docs/quickstart-openclaw.md](docs/quickstart-openclaw.md)** for the full 
 
 ---
 
+## Pushing traces to a self-hosted control plane
+
+`relic` is fully usable standalone — every trace lands in `.tr/traces/`
+and `relic trace view`, `relic trace search`, and `relic trace verify`
+work without a server. When you do want team visibility, point the CLI
+at a self-hosted [therelic-platform](https://github.com/therelicai/therelic-platform)
+instance:
+
+```bash
+# In therelic-platform/
+docker compose up -d
+
+# In your agent project
+export RELIC_API_URL=http://localhost:8080
+export RELIC_API_KEY=rk_...           # from `relic-api` `/v1/orgs/:id/api-keys`
+export RELIC_TRACE_KEY=$(openssl rand -hex 32)  # same value the API has
+relic run -- python my_agent.py
+relic trace push
+```
+
+When `RELIC_TRACE_KEY` is set on both sides, every trace event is
+HMAC-chained at write time and verified server-side on upload —
+tampering anywhere on the path is detected at parse.
+
+---
+
 ## Example Policies
 
 | Policy | Description |
