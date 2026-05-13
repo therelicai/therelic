@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/therelicai/therelic/internal/api"
 	"github.com/therelicai/therelic/internal/config"
 	"github.com/therelicai/therelic/internal/delegation"
 	"github.com/therelicai/therelic/internal/exfiltration"
@@ -211,6 +212,20 @@ func runAgent(errW io.Writer, args []string, opts runOptions) error {
 	tw, err := trace.NewTraceWriterWithKey(opts.traceDir, runID, traceChainKey)
 	if err != nil {
 		return fmt.Errorf("run: create trace writer: %w", err)
+	}
+
+	// Slice 14: optional live-feed streamer. Standalone mode (no
+	// RELIC_API_URL + RELIC_API_KEY) returns a nil streamer; nil-safe
+	// methods make the streaming call sites unconditional. Sealed
+	// event lines from the writer are tee'd into the streamer's queue
+	// so the disk and network paths see byte-identical bytes.
+	streamer, streamerErr := api.NewStreamerFromEnv()
+	if streamerErr != nil {
+		fmt.Fprintf(errW, "relic: warning: streamer disabled: %v\n", streamerErr)
+	}
+	if streamer != nil {
+		tw.SetSealedSink(func(line []byte) { _ = streamer.Submit(line) })
+		defer streamer.Close()
 	}
 
 	// Write run-start event (with delegation info when applicable).
@@ -563,8 +578,17 @@ func maybeStartProxy(
 		}
 		stats.record(ev.Auth)
 	}
+	// Slice 14: intent emission. The writer's sealed-sink tee feeds
+	// the optional streamer; standalone-mode runtimes still write
+	// IntentEvents to the local .trtrace, just without the network leg.
+	onIntent := func(ev trace.IntentEvent) {
+		if err := tw.WriteIntent(ev); err != nil {
+			fmt.Fprintf(errW, "relic: warning: write intent trace: %v\n", err)
+		}
+	}
 
 	p := proxy.NewMCPProxy(runID, srv.Command, srv.Args, eng, red, onAction)
+	p.SetIntentEmitter(onIntent)
 	if srv.Integrity != nil {
 		p.SetIntegrity(srv.Integrity)
 	}

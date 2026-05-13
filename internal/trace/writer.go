@@ -80,6 +80,40 @@ type PolicyReloadEvent struct {
 	Error  string `json:"error,omitempty"`
 }
 
+// IntentEvent is emitted *before* the policy engine produces a verdict.
+// Each IntentEvent's Seq matches the eventual ActionEvent's Seq so a
+// dashboard can pair "agent wants to do X" with "X was {allowed|denied}"
+// across the streaming channel.
+//
+// Slice 14 introduces this type as additive: ActionEvent is unchanged,
+// RunEvent is unchanged, and the platform's parser ignores unknown
+// event types (so a runtime that emits IntentEvents continues to
+// produce correct action totals on older platforms).
+//
+// The HMAC chain in the platform's trace verifier is type-agnostic —
+// sealed IntentEvents extend the chain safely.
+type IntentEvent struct {
+	V      int    `json:"v"`
+	T      string `json:"t"`   // "intent"
+	TS     string `json:"ts"`
+	Run    string `json:"run"`
+	Seq    int    `json:"seq"` // pairs with the eventual ActionEvent.Seq
+	Proto  string `json:"proto"`
+	Method string `json:"method"`
+	Target string `json:"target"`
+
+	// Params is the (redacted) input the agent is about to send. Redaction
+	// is applied by the proxy before this event is constructed; the writer
+	// never touches the value.
+	Params any `json:"params,omitempty"`
+
+	// ParentHash binds this intent to its prior sealed event in the run.
+	// Convenience for streaming subscribers that don't carry the full
+	// HMAC chain context but still want to verify ordering. The platform
+	// authoritatively verifies via the chain; this field is advisory.
+	ParentHash string `json:"parent_hash,omitempty"`
+}
+
 // TraceWriter appends NDJSON events to an append-only .trtrace file.
 // Writes are buffered and fsynced on a 100ms interval or on Close().
 //
@@ -96,6 +130,24 @@ type TraceWriter struct {
 	closed   bool
 	flushErr error
 	chain    *IntegrityChain
+
+	// sealedSink is invoked once per event with the fully-sealed line
+	// (the same bytes that will land on disk). Slice 14 wires this to
+	// the streaming live-feed flusher so an event is sealed exactly
+	// once and the disk + network paths see byte-identical bytes.
+	// Nil-safe — when unset the writer behaves as it did pre-slice-14.
+	sealedSink func([]byte)
+}
+
+// SetSealedSink installs a callback invoked after each event is
+// sealed, before it is buffered for disk write. Pass nil to remove.
+// Used by the runtime's CLI to feed sealed event lines into the
+// optional live-feed streamer; the writer doesn't otherwise interact
+// with the network.
+func (tw *TraceWriter) SetSealedSink(fn func([]byte)) {
+	tw.mu.Lock()
+	defer tw.mu.Unlock()
+	tw.sealedSink = fn
 }
 
 // NewTraceWriter creates or opens the .trtrace file at
@@ -169,6 +221,11 @@ func (tw *TraceWriter) WriteEvent(event any) error {
 		}
 		line = sealed
 	}
+	if tw.sealedSink != nil {
+		// Sink sees the final on-the-wire bytes. The streamer copies
+		// internally so we don't need to defensively copy here.
+		tw.sealedSink(line)
+	}
 	tw.buf = append(tw.buf, line)
 	return nil
 }
@@ -232,6 +289,18 @@ func (tw *TraceWriter) WriteRunEnd(runID string, exitCode, durationMs, total, al
 func (tw *TraceWriter) WriteAction(event ActionEvent) error {
 	event.V = 1
 	event.T = "action"
+	if event.TS == "" {
+		event.TS = now()
+	}
+	return tw.WriteEvent(event)
+}
+
+// WriteIntent emits an intent event. The caller is responsible for
+// populating Run, Seq, Proto, Method, and Target. V and T are filled
+// in here so the wire format stays stable.
+func (tw *TraceWriter) WriteIntent(event IntentEvent) error {
+	event.V = 1
+	event.T = "intent"
 	if event.TS == "" {
 		event.TS = now()
 	}

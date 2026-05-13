@@ -12,10 +12,15 @@ import (
 	"sync/atomic"
 	"time"
 
+	"strings"
+
+	"github.com/therelicai/therelic/internal/config"
+	"github.com/therelicai/therelic/internal/exfiltration"
 	"github.com/therelicai/therelic/internal/policy"
 	"github.com/therelicai/therelic/internal/redact"
 	"github.com/therelicai/therelic/internal/sandbox"
 	"github.com/therelicai/therelic/internal/trace"
+	"github.com/therelicai/therelic/internal/trust"
 )
 
 // ---------------------------------------------------------------------------
@@ -100,7 +105,15 @@ type MCPProxy struct {
 	engine     *policy.Engine         // nil → permissive (all actions allowed)
 	redactor   *redact.Redactor       // nil → no redaction
 	onAction   func(trace.ActionEvent) // called once per intercepted action
+	// onIntent is called once per intercepted action *before* the policy
+	// engine produces a verdict. nil → no intent emission (slice-13
+	// behavior). The proxy fills Seq, Run, Proto, Method, Target, and
+	// redacted Params; subscribers must not mutate the event.
+	onIntent   func(trace.IntentEvent)
 	sb         *sandbox.Sandbox       // nil → no filesystem sandbox
+	exfilGuard  *exfiltration.Guard        // nil → no exfiltration guard
+	seqDetector *policy.SequenceDetector  // nil → no sequence detection
+	integrity   *config.MCPServerIntegrity // nil → skip integrity check
 
 	proc       *exec.Cmd
 	procStdin  io.WriteCloser
@@ -128,15 +141,50 @@ func NewMCPProxy(runID, serverCmd string, serverArgs []string, engine *policy.En
 	}
 }
 
+// SetIntentEmitter attaches a callback that is invoked before policy
+// evaluation for every intercepted action. Slice 14 wires this to the
+// local trace's WriteIntent and the optional streaming flush. Kept as
+// a setter (not a constructor arg) so existing call sites compile
+// unchanged.
+func (p *MCPProxy) SetIntentEmitter(fn func(trace.IntentEvent)) {
+	p.onIntent = fn
+}
+
 // SetSandbox attaches a filesystem sandbox to the proxy. When set, file-related
 // tool calls are validated against the sandbox policy before forwarding.
 func (p *MCPProxy) SetSandbox(sb *sandbox.Sandbox) {
 	p.sb = sb
 }
 
+// SetExfiltrationGuard attaches an exfiltration guard to the proxy. When set,
+// outbound network tool calls are checked for data exfiltration attempts.
+func (p *MCPProxy) SetExfiltrationGuard(g *exfiltration.Guard) {
+	p.exfilGuard = g
+}
+
+// SetSequenceDetector attaches a sequence anomaly detector to the proxy. When
+// set, tool calls are tracked and multi-step attack patterns are blocked.
+func (p *MCPProxy) SetSequenceDetector(d *policy.SequenceDetector) {
+	p.seqDetector = d
+}
+
+// SetIntegrity attaches server integrity verification config to the proxy.
+// When set, Start() will verify the server executable before spawning it.
+func (p *MCPProxy) SetIntegrity(i *config.MCPServerIntegrity) {
+	p.integrity = i
+}
+
 // Start spawns the real MCP server subprocess and connects stdin/stdout pipes.
 // Must be called before ServeStdio.
 func (p *MCPProxy) Start() error {
+	if p.integrity != nil {
+		result := trust.VerifyServer(p.serverCmd, p.integrity)
+		if !result.Verified {
+			return fmt.Errorf("mcp proxy: server integrity check failed for %q: %s", p.serverCmd, result.Reason)
+		}
+		fmt.Fprintf(os.Stderr, "mcp proxy: server %q verified (sha256: %s)\n", p.serverCmd, result.Actual)
+	}
+
 	p.startTime = time.Now()
 	p.proc = exec.Command(p.serverCmd, p.serverArgs...)
 
@@ -260,6 +308,23 @@ func (p *MCPProxy) interceptToolCall(line []byte, msg rpcMsg, out io.Writer) err
 		}
 	}
 
+	// Exfiltration guard: check outbound network tool calls for data leakage.
+	if p.exfilGuard != nil {
+		if r := p.exfilGuard.CheckParams(strippedArgs, params.Name); r != nil && r.Triggered {
+			exfilResult := policy.AuthDecision{
+				Decision: p.exfilGuard.Action(),
+				RuleID:   r.RuleID,
+				Reason:   r.Reason,
+			}
+			if exfilResult.IsDenied() {
+				seq := int(atomic.AddInt32(&p.seq, 1))
+				atomic.AddInt32(&p.actionCount, 1)
+				p.emit(seq, "tool_call", params.Name, strippedArgs, exfilResult, ctx)
+				return writeDenial(out, msg.ID, exfilResult, params.Name)
+			}
+		}
+	}
+
 	forwardLine := line
 	if ctx != nil {
 		var paramMap map[string]json.RawMessage
@@ -327,6 +392,20 @@ func (p *MCPProxy) interceptAndRelay(
 		Params:   params,
 	}
 
+	// Assign the sequence number *before* evaluation so the IntentEvent
+	// (emitted next) and the eventual ActionEvent share the same Seq.
+	// The dashboard pairs them on (Run, Seq). actionCount is bumped
+	// *after* Evaluate so the constraint check (state.ActionCount >=
+	// MaxActions) keeps its slice-13 semantics.
+	seq := int(atomic.AddInt32(&p.seq, 1))
+
+	// Slice 14: emit the intent event before the engine produces a
+	// verdict so streaming subscribers see "agent wants to do X"
+	// before they see "X was {allowed|denied}". The local trace
+	// writer ordering is what the acceptance test verifies; network
+	// streaming ordering is best-effort.
+	p.emitIntent(seq, mcpMethod, target, params)
+
 	// Evaluate against the policy engine.
 	var result policy.AuthDecision
 	if p.engine != nil {
@@ -342,13 +421,31 @@ func (p *MCPProxy) interceptAndRelay(
 
 	// Count this action regardless of outcome (for constraint tracking).
 	atomic.AddInt32(&p.actionCount, 1)
-	seq := int(atomic.AddInt32(&p.seq, 1))
 
 	if result.IsDenied() {
 		// Emit a denial trace event.
 		p.emit(seq, mcpMethod, target, params, result, ctx)
 		// Return a JSON-RPC error to the agent — do NOT forward to server.
 		return writeDenial(out, msgID, result, target)
+	}
+
+	// Sequence anomaly detection: record the tool call and check for
+	// multi-step attack patterns before forwarding.
+	if p.seqDetector != nil && mcpMethod == "tool_call" {
+		if match := p.seqDetector.Record(target); match != nil {
+			seqResult := policy.AuthDecision{
+				RuleID: "sequence:" + match.RuleID,
+				Reason: match.Reason + " [chain: " + strings.Join(match.Chain, " → ") + "]",
+			}
+			if match.Action == "deny" {
+				seqResult.Decision = "deny"
+				p.emit(seq, mcpMethod, target, params, seqResult, ctx)
+				return writeDenial(out, msgID, seqResult, target)
+			}
+			// audit: emit a flagged trace event but still forward.
+			seqResult.Decision = "audit_deny"
+			p.emit(seq, mcpMethod, target, params, seqResult, ctx)
+		}
 	}
 
 	// Action is allowed (possibly flagged as audit_deny or would_deny).
@@ -367,6 +464,31 @@ func (p *MCPProxy) interceptAndRelay(
 	// Forward server response to agent.
 	_, err = out.Write(responseLine)
 	return err
+}
+
+// emitIntent dispatches an IntentEvent to the onIntent callback when
+// configured. Called *before* engine.Evaluate so streaming subscribers
+// see "agent wants to do X" before the verdict. Redaction matches the
+// rules emit() uses for the ActionEvent — the same params bytes flow
+// through the same redactor.
+func (p *MCPProxy) emitIntent(seq int, mcpMethod, target string, params json.RawMessage) {
+	if p.onIntent == nil {
+		return
+	}
+	var redactedParams any
+	if p.redactor != nil && len(params) > 0 {
+		redactedParams = p.redactor.RedactParams(params)
+	} else if len(params) > 0 {
+		redactedParams = params
+	}
+	p.onIntent(trace.IntentEvent{
+		Run:    p.runID,
+		Seq:    seq,
+		Proto:  "mcp",
+		Method: mcpMethod,
+		Target: target,
+		Params: redactedParams,
+	})
 }
 
 // emit builds and dispatches an ActionEvent to the onAction callback.

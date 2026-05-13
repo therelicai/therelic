@@ -160,6 +160,12 @@ See **[docs/quickstart-openclaw.md](docs/quickstart-openclaw.md)** for the full 
 
 **Trace files** — NDJSON, one file per run in `.tr/traces/`. Human-readable, grep-friendly, queryable with `relic trace search`.
 
+**Intent events (slice 14)** — for every intercepted tool call, the runtime emits an `IntentEvent` *before* the policy engine produces a verdict, and the existing `ActionEvent` *after* the verdict. Both share the same `seq` so the platform's Live view can pair "agent wants to do X" with "X was {allowed|denied}". IntentEvents are additive — `ActionEvent` is unchanged — and extend the HMAC chain when `RELIC_TRACE_KEY` is set.
+
+**Streaming flush** — when both `RELIC_API_URL` and `RELIC_API_KEY` are set, every sealed event line is POSTed to the platform's `/v1/intents` endpoint as it's written, in addition to landing in the local `.trtrace` file. The streamer uses a bounded per-process queue with drop-on-overflow semantics; the proxy's hot path is never blocked by network slowness.
+
+**Standalone mode** — with `RELIC_API_KEY` (or `RELIC_API_URL`) unset, the streamer is a no-op. IntentEvents still land in the local trace; no network traffic is generated. The batch `relic trace push` at end-of-run remains the durable path for delivering completed runs to a control plane on reconnect.
+
 ---
 
 ## Commands
@@ -185,6 +191,7 @@ See **[docs/quickstart-openclaw.md](docs/quickstart-openclaw.md)** for the full 
 - [OpenClaw Guide](docs/quickstart-openclaw.md) — govern OpenClaw in 3 minutes
 - [Policy Reference](docs/policy-reference.md) — all fields, all examples
 - [Architecture](docs/ARCHITECTURE.md) — design decisions and internals
+- [RELIC.md (cross-repo alignment)](https://github.com/therelicai/therelic-platform/blob/main/RELIC.md) — selector contract, event schemas, replay protocol. Authoritative for any cross-repo capability that involves the runtime + platform + app together.
 
 ---
 
