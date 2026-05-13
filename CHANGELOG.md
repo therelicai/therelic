@@ -11,6 +11,42 @@ Cross-repo contracts referenced below live in
 
 ## [Unreleased]
 
+### Added — Slice 15: Universal policy hot-reload
+
+- **`api.Client.SubscribePolicyUpdates`** — opens an authenticated SSE
+  connection against `GET /v1/agents/:name/policy_updates` and yields
+  one `PolicyUpdate` per `event: policy_update` frame. Hand-rolled
+  SSE reader (same rationale as slice 14: fetch is the source of
+  truth, no external dependency on an SSE library).
+- **`api.Client.ReportPolicyApplied`** — POSTs `{hash}` to
+  `/v1/agents/:name/policy_applied`. Called after a successful
+  `eng.SwapPolicy` to advance the dashboard's apply counter.
+- **`--watch` swap** in `internal/cli/run.go`: removed the fsnotify
+  watcher; replaced with `runPolicyWatcher` goroutine that subscribes
+  to the platform's policy-updates SSE channel, pulls policy on each
+  notification, `SwapPolicy`'s the engine, and reports applied. Single
+  reload mechanism — no parallel paths. `--watch` without API
+  credentials is now a no-op with a clear stderr message.
+
+### Invariants preserved across hot-reload
+
+- **In-flight `Evaluate` calls complete under their starting policy.**
+  `Engine.Evaluate` reads the policy pointer under RLock; `SwapPolicy`
+  publishes a new pointer atomically. Pinned by
+  `internal/policy/engine_swap_concurrent_test.go` under the race
+  detector (16 workers, 200 swaps; zero "weird" decisions).
+- **The per-run HMAC trace chain key is not rotated.** `SwapPolicy`
+  only touches the policy pointer; the chain key bound to the writer
+  at run start stays in place. A run that started under v1 verifies
+  end-to-end after any number of swaps to v2/v3/….
+
+### Breaking change
+
+- `relic run --watch` previously used fsnotify on the local policy
+  file. It now requires `RELIC_API_KEY` + `RELIC_API_URL` and
+  subscribes to the control plane's SSE channel instead. Standalone
+  runs without `--watch` are unchanged.
+
 ### Added — Slice 14b: Streaming intents
 
 - **`IntentEvent` trace type** (additive). Emitted by the MCP proxy

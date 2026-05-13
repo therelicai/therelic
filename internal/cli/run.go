@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -298,23 +299,38 @@ func runAgent(errW io.Writer, args []string, opts runOptions) error {
 		fmt.Fprintf(errW, "relic: filesystem sandbox active (%d mounts)\n", len(mounts))
 	}
 
-	// Start policy watcher when --watch is enabled.
-	var policyWatcher *policy.Watcher
+	// Slice 15: --watch is driven by an agent-facing SSE channel
+	// (GET /v1/agents/:name/policy_updates), not fsnotify on a local
+	// file. The previous fsnotify path is removed entirely — single
+	// reload mechanism, no parallel paths. Standalone-mode users who
+	// relied on fsnotify lose --watch; everything else (run, trace,
+	// pull-once) continues to work without an API key.
+	//
+	// The reload sequence is: SSE frame arrives → pull policy via
+	// existing api.Client.PullPolicy → parse + validate → SwapPolicy
+	// on the in-memory engine → report applied hash. SwapPolicy is
+	// safe under concurrent Evaluate (proven by
+	// policy.TestEngineSwapDuringInFlightEvaluate); in-flight calls
+	// complete under their starting policy. The per-run HMAC chain
+	// key is not rotated.
+	var policyWatcherCancel context.CancelFunc
 	if opts.watch {
-		policyWatcher = policy.NewWatcher(policyPath, func(newPolicy *policy.Policy, err error) {
-			if err != nil {
-				fmt.Fprintf(errW, "relic: policy reload error: %v\n", err)
-				tw.WritePolicyReload(runID, policyPath, "error", err.Error()) //nolint:errcheck
-				return
+		policyClient, perr := api.NewClientFromEnv()
+		if perr != nil {
+			fmt.Fprintf(errW, "relic: --watch requires RELIC_API_KEY (+ RELIC_API_URL); hot reload disabled\n")
+		} else {
+			agentName := ""
+			if loadedPolicy != nil && loadedPolicy.Agent.Name != "" {
+				agentName = loadedPolicy.Agent.Name
 			}
-			if opts.modeOverride != "" {
-				newPolicy.Mode = opts.modeOverride
+			if agentName == "" {
+				fmt.Fprintf(errW, "relic: --watch needs agent.name in the policy; hot reload disabled\n")
+			} else {
+				watchCtx, cancel := context.WithCancel(context.Background())
+				policyWatcherCancel = cancel
+				go runPolicyWatcher(watchCtx, errW, policyClient, agentName, opts.modeOverride, eng, tw, runID, policyPath)
 			}
-			eng.SwapPolicy(newPolicy)
-			fmt.Fprintf(errW, "relic: policy reloaded from %s\n", policyPath)
-			tw.WritePolicyReload(runID, policyPath, "ok", "") //nolint:errcheck
-		})
-		policyWatcher.Start()
+		}
 	}
 
 	// MCP proxy wiring: either via .tr/mcp.yaml (default) or openclaw.json.
@@ -452,9 +468,9 @@ func runAgent(errW io.Writer, args []string, opts runOptions) error {
 	signal.Stop(sigCh)
 	close(sigCh)
 
-	// Stop the policy watcher.
-	if policyWatcher != nil {
-		policyWatcher.Stop()
+	// Stop the policy watcher (slice 15: SSE subscription cancel).
+	if policyWatcherCancel != nil {
+		policyWatcherCancel()
 	}
 
 	// Tear down the HTTP logger.
@@ -772,4 +788,98 @@ func startHTTPLogger(
 		return nil
 	}
 	return &httpWiring{logger: logger, port: port}
+}
+
+// runPolicyWatcher subscribes to the platform's per-agent policy
+// update SSE channel and applies notifications via the existing
+// eng.SwapPolicy mechanism. Slice 15's reload trigger.
+//
+// On each notification: pull policy via the existing /v1/agents/:name/
+// policy endpoint, parse + validate, hot-swap in-memory, and POST
+// /v1/agents/:name/policy_applied to advance the dashboard's apply
+// counter. Failures along the way are logged to errW and reflected
+// as a policy_reload error event in the trace; the run continues
+// under the previous policy.
+//
+// Reconnects use exponential backoff capped at 30s. SubscribePolicyUpdates
+// blocks until the server closes the connection or ctx is cancelled,
+// so this function's outer loop only iterates on reconnect.
+func runPolicyWatcher(
+	ctx context.Context,
+	errW io.Writer,
+	client *api.Client,
+	agentName, modeOverride string,
+	eng *policy.Engine,
+	tw *trace.TraceWriter,
+	runID, policyPath string,
+) {
+	backoff := time.Second
+	const maxBackoff = 30 * time.Second
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		err := client.SubscribePolicyUpdates(ctx, agentName, func(u api.PolicyUpdate) {
+			// Pull the YAML the platform just notified us about, then
+			// swap in place. The pull deduplicates: if the same hash
+			// arrives twice (e.g., reconnect replay), the swap is a
+			// no-op and we still report applied to nudge the dashboard.
+			pullCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			defer cancel()
+			yamlBytes, perr := client.PullPolicy(pullCtx, agentName)
+			if perr != nil {
+				fmt.Fprintf(errW, "relic: policy pull on update failed: %v\n", perr)
+				tw.WritePolicyReload(runID, policyPath, "error", perr.Error()) //nolint:errcheck
+				return
+			}
+			parsed, parseErr := policy.Parse(yamlBytes)
+			if parseErr != nil {
+				fmt.Fprintf(errW, "relic: policy parse on update failed: %v\n", parseErr)
+				tw.WritePolicyReload(runID, policyPath, "error", parseErr.Error()) //nolint:errcheck
+				return
+			}
+			if errs := policy.Validate(parsed, false); len(errs) > 0 {
+				fmt.Fprintf(errW, "relic: policy validate on update failed: %v\n", errs[0])
+				tw.WritePolicyReload(runID, policyPath, "error", errs[0].Error()) //nolint:errcheck
+				return
+			}
+			if modeOverride != "" {
+				parsed.Mode = modeOverride
+			}
+			// SwapPolicy is safe under in-flight Evaluate (RLock'd
+			// read of the current pointer; the swap publishes a new
+			// pointer atomically). The per-run HMAC chain key is
+			// derived from runID + master secret and is NOT touched
+			// here — verification continues end-to-end across the
+			// swap.
+			eng.SwapPolicy(parsed)
+			fmt.Fprintf(errW, "relic: policy hot-reloaded (set %q, hash %s, version %d)\n",
+				u.PolicySetName, u.PolicyHash, u.Version)
+			tw.WritePolicyReload(runID, policyPath, "ok", "") //nolint:errcheck
+
+			if reportErr := client.ReportPolicyApplied(pullCtx, agentName, u.PolicyHash); reportErr != nil {
+				fmt.Fprintf(errW, "relic: report applied failed: %v\n", reportErr)
+				// Non-fatal: the dashboard's counter will lag; the
+				// next notification or a manual sync will reconcile.
+			}
+		})
+		if ctx.Err() != nil {
+			return
+		}
+		// The SSE stream ended (timeout / proxy / platform restart).
+		// Back off and retry. Stderr message keeps the operator informed
+		// without flooding under sustained outage.
+		if err != nil {
+			fmt.Fprintf(errW, "relic: policy update stream disconnected: %v (retry in %s)\n", err, backoff)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+		backoff *= 2
+		if backoff > maxBackoff {
+			backoff = maxBackoff
+		}
+	}
 }

@@ -166,6 +166,13 @@ See **[docs/quickstart-openclaw.md](docs/quickstart-openclaw.md)** for the full 
 
 **Standalone mode** — with `RELIC_API_KEY` (or `RELIC_API_URL`) unset, the streamer is a no-op. IntentEvents still land in the local trace; no network traffic is generated. The batch `relic trace push` at end-of-run remains the durable path for delivering completed runs to a control plane on reconnect.
 
+**Universal policy hot-reload (slice 15)** — with `--watch` and a control plane configured (`RELIC_API_URL` + `RELIC_API_KEY`), the runtime subscribes to `GET /v1/agents/:name/policy_updates` on startup. Each notification triggers: pull policy → parse + validate → `eng.SwapPolicy` → `POST /v1/agents/:name/policy_applied`. Two invariants the runtime guarantees across every swap:
+
+- **In-flight `Evaluate` calls complete under their starting policy.** The engine reads the policy pointer under an RWMutex; the swap publishes a new pointer atomically. Readers see the old or new pointer, never a torn mixture.
+- **The per-run HMAC trace chain key is not rotated.** A run started under v1 keeps its chain key through any number of hot reloads; `relic trace verify` reads the trace end-to-end and confirms the chain is intact.
+
+`--watch` without API credentials is a no-op with a stderr note — fsnotify-based local file watching was removed in slice 15 to keep the reload path single-source.
+
 ---
 
 ## Commands
