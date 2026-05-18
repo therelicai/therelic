@@ -15,7 +15,8 @@ import (
 )
 
 func newTracePushCmd() *cobra.Command {
-	return &cobra.Command{
+	var flagDir string
+	cmd := &cobra.Command{
 		Use:          "push [run-id]",
 		Short:        "Upload traces to The Relic platform",
 		Long:         "Upload .trtrace files to The Relic platform for hosted storage, analysis, and governance.",
@@ -26,14 +27,18 @@ func newTracePushCmd() *cobra.Command {
 			if err != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s\n\n", err)
 				fmt.Fprintf(cmd.ErrOrStderr(), "To get started:\n")
-				fmt.Fprintf(cmd.ErrOrStderr(), "  1. Sign up at https://therelic.dev\n")
-				fmt.Fprintf(cmd.ErrOrStderr(), "  2. Create an API key in Settings\n")
+				fmt.Fprintf(cmd.ErrOrStderr(), "  1. Bring up a Relic platform (https://github.com/therelicai/therelic-platform)\n")
+				fmt.Fprintf(cmd.ErrOrStderr(), "  2. Create an API key in the dashboard (or with `docker compose exec relic-api ...`)\n")
 				fmt.Fprintf(cmd.ErrOrStderr(), "  3. export RELIC_API_KEY=<your-key>\n")
+				fmt.Fprintf(cmd.ErrOrStderr(), "  4. export RELIC_API_URL=<your-platform-url>  (default: http://localhost:8080/v1)\n")
 				return err
 			}
 
-			paths := config.DefaultPaths()
-			traceDir := paths.TracesDir
+			traceDir := flagDir
+			if traceDir == "" {
+				paths := config.DefaultPaths()
+				traceDir = paths.TracesDir
+			}
 
 			if len(args) > 0 {
 				return pushSingleTrace(cmd, client, traceDir, args[0])
@@ -41,6 +46,8 @@ func newTracePushCmd() *cobra.Command {
 			return pushLatestTrace(cmd, client, traceDir)
 		},
 	}
+	cmd.Flags().StringVar(&flagDir, "dir", "", "Directory holding .trtrace files (default: .tr/traces)")
+	return cmd
 }
 
 func pushSingleTrace(cmd *cobra.Command, client *api.Client, traceDir, runID string) error {

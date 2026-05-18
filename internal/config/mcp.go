@@ -7,13 +7,21 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// MCPServerIntegrity holds integrity verification config for an MCP server.
+type MCPServerIntegrity struct {
+	SHA256    string `yaml:"sha256"`    // expected hash of the executable
+	Publisher string `yaml:"publisher"` // display name (informational)
+	Required  bool   `yaml:"required"`  // if true, refuse to start without valid hash
+}
+
 // MCPServerConfig describes one MCP server entry in .tr/mcp.yaml.
 type MCPServerConfig struct {
-	Name      string   `yaml:"name"`
-	Transport string   `yaml:"transport"` // "stdio" or "sse"
-	Command   string   `yaml:"command"`   // stdio: executable path
-	Args      []string `yaml:"args"`      // stdio: command arguments
-	URL       string   `yaml:"url"`       // sse: server URL
+	Name      string              `yaml:"name"`
+	Transport string              `yaml:"transport"`          // "stdio" or "sse"
+	Command   string              `yaml:"command"`            // stdio: executable path
+	Args      []string            `yaml:"args"`               // stdio: command arguments
+	URL       string              `yaml:"url"`                // sse: server URL
+	Integrity *MCPServerIntegrity `yaml:"integrity,omitempty"` // optional integrity check
 }
 
 // MCPConfig is the top-level structure for .tr/mcp.yaml.

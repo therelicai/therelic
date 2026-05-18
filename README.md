@@ -183,6 +183,9 @@ See **[docs/quickstart-openclaw.md](docs/quickstart-openclaw.md)** for the full 
 | `relic run -- <cmd>` | Run agent under governance |
 | `relic run --from-openclaw -- openclaw gateway` | Govern an OpenClaw agent |
 | `relic run --mode audit -- <cmd>` | Audit mode (log denials, don't block) |
+| `relic connect claude-code` | Wrap an agent client's MCP servers ([guide](docs/CONNECTING.md)) |
+| `relic daemon` | Long-running HTTP proxy + trace pusher |
+| `relic gateway` | Stdio MCP gateway multiplexing N upstreams |
 | `relic trace list` | List recent runs |
 | `relic trace view <run-id>` | Show all events for a run |
 | `relic trace search --auth deny` | Find all denied actions |
@@ -195,6 +198,7 @@ See **[docs/quickstart-openclaw.md](docs/quickstart-openclaw.md)** for the full 
 ## Documentation
 
 - [Quickstart](docs/quickstart.md) — step-by-step for any agent
+- [Connecting agents](docs/CONNECTING.md) — `relic connect` / `gateway` / `daemon` patterns for Claude Code, Cursor, etc.
 - [OpenClaw Guide](docs/quickstart-openclaw.md) — govern OpenClaw in 3 minutes
 - [Policy Reference](docs/policy-reference.md) — all fields, all examples
 - [Architecture](docs/ARCHITECTURE.md) — design decisions and internals

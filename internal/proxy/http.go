@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/bmatcuk/doublestar/v4"
+	"github.com/therelicai/therelic/internal/exfiltration"
 	"github.com/therelicai/therelic/internal/policy"
 	"github.com/therelicai/therelic/internal/redact"
 	"github.com/therelicai/therelic/internal/trace"
@@ -61,8 +62,9 @@ type HTTPLogger struct {
 	server   *http.Server
 	listener net.Listener
 
-	dnsAllow []string
-	dnsDeny  []string
+	dnsAllow   []string
+	dnsDeny    []string
+	exfilGuard *exfiltration.Guard
 
 	startTime   time.Time
 	actionCount int32 // atomic — used for RunState constraint tracking
@@ -79,6 +81,11 @@ func NewHTTPLogger(runID string, engine *policy.Engine, red *redact.Redactor, on
 		onAction:  onAction,
 		startTime: time.Now(),
 	}
+}
+
+// SetExfiltrationGuard attaches an exfiltration guard to the HTTP logger.
+func (h *HTTPLogger) SetExfiltrationGuard(g *exfiltration.Guard) {
+	h.exfilGuard = g
 }
 
 // SetNetworkPolicy configures DNS-level allow/deny lists for outbound connections.
@@ -156,6 +163,24 @@ func (h *HTTPLogger) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	target := r.URL.String()
+
+	// Exfiltration guard: check outbound URL for data leakage.
+	if h.exfilGuard != nil {
+		if xr := h.exfilGuard.CheckURL(target); xr != nil && xr.Triggered {
+			exfilResult := policy.AuthDecision{
+				Decision: h.exfilGuard.Action(),
+				RuleID:   xr.RuleID,
+				Reason:   xr.Reason,
+			}
+			if exfilResult.IsDenied() {
+				seq := int(atomic.AddInt32(&h.seq, 1))
+				atomic.AddInt32(&h.actionCount, 1)
+				h.emit(seq, "http", r.Method, target, json.RawMessage(`{}`), exfilResult)
+				h.writeDeniedHTTP(w, exfilResult, target)
+				return
+			}
+		}
+	}
 
 	// Build params: headers (redacted) + body size.
 	rawHeaders := flattenHeaders(r.Header)

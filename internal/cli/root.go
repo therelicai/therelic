@@ -19,6 +19,10 @@ func NewRootCmd(version string) *cobra.Command {
 	root.AddCommand(newFingerprintCmd())
 	root.AddCommand(newIdentityCmd())
 	root.AddCommand(newKeygenCmd())
+	root.AddCommand(newHardenCmd())
+	root.AddCommand(newConnectCmd())
+	root.AddCommand(newDaemonCmd())
+	root.AddCommand(newGatewayCmd())
 
 	return root
 }

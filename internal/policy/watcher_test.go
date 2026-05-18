@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-const validPolicyYAML = `version: "1"
+const watcherPolicyYAML = `version: "1"
 agent:
   name: test-agent
 mode: enforce
@@ -21,7 +21,7 @@ rules:
     action: allow
 `
 
-const validPolicyYAMLv2 = `version: "1"
+const watcherPolicyYAMLv2 = `version: "1"
 agent:
   name: test-agent
 mode: audit
@@ -34,7 +34,7 @@ rules:
     action: allow
 `
 
-const invalidPolicyYAML = `version: "1"
+const watcherInvalidPolicyYAML = `version: "1"
 agent:
   name: ""
 mode: enforce
@@ -51,7 +51,7 @@ func writePolicyFile(t *testing.T, path, content string) {
 func TestWatcher_FileChange(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "policy.yaml")
-	writePolicyFile(t, path, validPolicyYAML)
+	writePolicyFile(t, path, watcherPolicyYAML)
 
 	var mu sync.Mutex
 	var gotPolicy *Policy
@@ -76,7 +76,7 @@ func TestWatcher_FileChange(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Modify the file — bump mtime by writing new content.
-	writePolicyFile(t, path, validPolicyYAMLv2)
+	writePolicyFile(t, path, watcherPolicyYAMLv2)
 
 	select {
 	case <-called:
@@ -100,7 +100,7 @@ func TestWatcher_FileChange(t *testing.T) {
 func TestWatcher_InvalidPolicy(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "policy.yaml")
-	writePolicyFile(t, path, validPolicyYAML)
+	writePolicyFile(t, path, watcherPolicyYAML)
 
 	var mu sync.Mutex
 	var gotErr error
@@ -121,7 +121,7 @@ func TestWatcher_InvalidPolicy(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	writePolicyFile(t, path, invalidPolicyYAML)
+	writePolicyFile(t, path, watcherInvalidPolicyYAML)
 
 	select {
 	case <-called:
@@ -139,7 +139,7 @@ func TestWatcher_InvalidPolicy(t *testing.T) {
 func TestWatcher_NoChange(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "policy.yaml")
-	writePolicyFile(t, path, validPolicyYAML)
+	writePolicyFile(t, path, watcherPolicyYAML)
 
 	callCount := 0
 	var mu sync.Mutex
@@ -166,7 +166,7 @@ func TestWatcher_NoChange(t *testing.T) {
 func TestWatcher_StopClean(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "policy.yaml")
-	writePolicyFile(t, path, validPolicyYAML)
+	writePolicyFile(t, path, watcherPolicyYAML)
 
 	w := NewWatcher(path, func(p *Policy, err error) {})
 	w.interval = 50 * time.Millisecond

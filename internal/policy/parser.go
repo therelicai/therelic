@@ -3,6 +3,7 @@ package policy
 import (
 	"fmt"
 	"os"
+	"regexp"
 
 	"gopkg.in/yaml.v3"
 )
@@ -20,6 +21,8 @@ type Policy struct {
 	Constraints        Constraints      `yaml:"constraints"`
 	Filesystem         FilesystemConfig `yaml:"filesystem"`
 	Network            NetworkConfig    `yaml:"network"`
+	Exfiltration       ExfiltrationConfig `yaml:"exfiltration"`
+	Sequences          SequenceConfig     `yaml:"sequences"`
 }
 
 // FilesystemConfig defines the sandbox configuration for governed agent processes.
@@ -40,6 +43,15 @@ type FilesystemMount struct {
 type NetworkConfig struct {
 	DNSAllow []string `yaml:"dns_allow"`
 	DNSDeny  []string `yaml:"dns_deny"`
+}
+
+// ExfiltrationConfig controls the outbound data exfiltration guard.
+type ExfiltrationConfig struct {
+	Enabled           bool     `yaml:"enabled"`
+	SensitivePatterns []string `yaml:"sensitive_patterns"`
+	MaxQueryEntropy   float64  `yaml:"max_query_entropy"`
+	MinValueLength    int      `yaml:"min_value_length"`
+	BlockAction       string   `yaml:"block_action"` // "deny" or "audit"
 }
 
 // AgentIdentity identifies the agent this policy governs.
@@ -192,6 +204,50 @@ func Validate(p *Policy, strict bool) []ValidationError {
 			}
 			if m.Mode != "ro" && m.Mode != "rw" {
 				add(prefix+".mode", fmt.Sprintf("invalid value %q (must be \"ro\" or \"rw\")", m.Mode))
+			}
+		}
+	}
+
+	// Exfiltration config validation
+	if p.Exfiltration.Enabled {
+		for i, pat := range p.Exfiltration.SensitivePatterns {
+			if _, err := regexp.Compile(pat); err != nil {
+				add(fmt.Sprintf("exfiltration.sensitive_patterns[%d]", i),
+					fmt.Sprintf("invalid regex %q: %v", pat, err))
+			}
+		}
+		switch p.Exfiltration.BlockAction {
+		case "", "deny", "audit":
+		default:
+			add("exfiltration.block_action",
+				fmt.Sprintf("invalid value %q (must be \"deny\" or \"audit\")", p.Exfiltration.BlockAction))
+		}
+	}
+
+	// Sequence rules validation
+	if len(p.Sequences.Rules) > 0 {
+		if p.Sequences.Window != 0 && p.Sequences.Window < 2 {
+			add("sequences.window", fmt.Sprintf("invalid value %d (must be >= 2)", p.Sequences.Window))
+		}
+		seqIDs := make(map[string]int)
+		for i, sr := range p.Sequences.Rules {
+			prefix := fmt.Sprintf("sequences.rules[%d]", i)
+			if sr.ID == "" {
+				add(prefix+".id", "missing required field")
+			} else if prev, dup := seqIDs[sr.ID]; dup {
+				add(prefix+".id", fmt.Sprintf("duplicate id %q (first seen at sequences.rules[%d])", sr.ID, prev))
+			} else {
+				seqIDs[sr.ID] = i
+			}
+			if len(sr.Pattern) < 2 {
+				add(prefix+".pattern", "must contain at least 2 elements")
+			}
+			switch sr.Action {
+			case "deny", "audit":
+			case "":
+				add(prefix+".action", "missing required field (must be deny|audit)")
+			default:
+				add(prefix+".action", fmt.Sprintf("invalid value %q (must be deny|audit)", sr.Action))
 			}
 		}
 	}

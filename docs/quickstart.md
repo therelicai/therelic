@@ -264,6 +264,28 @@ relic trace list --has-denials
 
 ---
 
+## Pushing traces to a platform
+
+The runtime alone writes traces to `.tr/traces/`. To centralize them
+for a team — dashboard view, audit log, governance proposals — push
+to a Relic platform:
+
+```bash
+# By default the CLI talks to http://localhost:8080/v1. Self-host the
+# platform with `docker compose up` in therelic-platform, then:
+export RELIC_API_KEY=rk_...           # from the platform's dashboard
+relic trace push                       # uploads all pending traces
+
+# Pointing at a remote platform:
+export RELIC_API_URL=https://relic.your-company.com/v1
+relic trace push
+```
+
+See [therelic-platform/RUNNING.md](https://github.com/therelicai/therelic-platform/blob/main/RUNNING.md)
+for the five self-host paths (laptop, Neon+R2, Fly, Supabase, BYO).
+
+---
+
 ## Next Steps
 
 - [OpenClaw Guide](quickstart-openclaw.md) — govern OpenClaw in 3 minutes

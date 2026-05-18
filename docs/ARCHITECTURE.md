@@ -87,6 +87,36 @@ Inter-agent calls are themselves capability-gated, signed requests through media
 
 Enterprises keep their existing agent stack. No SDK, no plugin, no code change. The mediation layer is invisible to the agent and non-bypassable by it.
 
+### 0.3 Open Substrate, Source-Available Platform
+
+The Relic stack is split across two licenses on purpose:
+
+| Repo | License | Why |
+|---|---|---|
+| `therelic` (this repo — runtime + CLI) | **Apache License 2.0** | Maximum adoption. The runtime is the wedge — every governed Claude / OpenClaw / LangChain agent has it on the host. OSI-approved, in `apt`/`brew`/`yum`, no procurement gates, no CLA. Patent grant + patent-retaliation + explicit trademark clause. |
+| `therelic-website` (marketing) | **Apache License 2.0** | Same posture. Static site has no competitive moat; openness is the lower-friction default. |
+| `therelic-platform` (control plane + governance worker) | **Business Source License 1.1** | Source-available, self-hostable for any purpose under the Additional Use Grant — including internal production use, embedding in non-competing products, and customer self-hosted deployments. The grant prohibits offering a competing hosted **Governance Service**. Each released file converts to Apache 2.0 four years after publication. |
+| `therelic-app` (dashboard) | **Business Source License 1.1** | Same Additional Use Grant. Same Change Date / Change License. |
+
+The business model does not depend on the runtime being closed; it depends
+on the **hosted product** at `therelic.dev` plus **services revenue**
+(implementation, management, AI-transformation consulting). The runtime
+needs to be true open source for adoption to compound; the platform and
+dashboard get BSL only to prevent a competing hosted clone.
+
+What stays proprietary is the **operational substrate** (deployment
+automation, secrets, customer-onboarding workflows) and the **brand**
+(see TRADEMARKS.md, present in every repo). Forks are welcome; forks
+named "The Relic" are not.
+
+The trust network protocol — transport binding, identity verification,
+`from_agent` policy field, trace correlation — belongs in this repo
+(Apache 2.0) so any agent in any organization can speak it without asking
+permission. The trust network *operations* — capability registry, trust
+scoring, bilateral policy templates, marketplace UI, metered transactions
+— belong in `therelic-platform` (BSL). The split is by concern; the
+license follows the concern.
+
 ---
 
 ## 1. System Overview
@@ -196,6 +226,7 @@ relic
 ├── policy
 │   ├── init         # Generate starter policy
 │   ├── validate     # Check policy syntax
+│   ├── pull         # Pull authoritative policy from the control plane
 │   ├── sign         # v3.3: Ed25519-sign a policy file
 │   ├── verify       # v3.3: Verify Ed25519 signature of a policy file
 │   └── history      # Show policy changelog
@@ -1314,6 +1345,18 @@ relic policy validate                  # Check syntax and consistency
 relic policy validate --strict         # Also warn on overly permissive rules
 ```
 
+### 9.6.1 `relic policy pull`
+
+```bash
+relic policy pull                                      # Pull policy for the agent in .tr/policy.yaml
+relic policy pull --agent data-pipeline-agent          # Pull for an explicit agent
+relic policy pull --dry-run                            # Print fetched policy without writing
+relic policy pull --force                              # Overwrite local edits
+relic policy pull --out ./custom-policy.yaml           # Write to a custom path
+```
+
+The control plane is the policy authority — agents pull from it, local files are a fallback when offline. `relic policy pull` calls `GET /v1/agents/:name/policy`, validates the returned YAML before touching disk, and refuses to overwrite a locally-modified file unless `--force` is set. Requires `RELIC_API_KEY`; override the endpoint with `RELIC_API_URL`.
+
 ### 9.7 `relic identity`
 
 ```bash
@@ -1504,6 +1547,9 @@ The `no_proxy` variable is also cleared to prevent agents from bypassing the HTT
 | Env hardening scope | Strip proxy/TLS/injection/spoofing vars | Full env whitelist | Whitelist breaks too many agent workflows; targeted stripping handles known attack vectors |
 | CI quality gates | lint + test + vulncheck + coverage | Test only | Early adoption of quality gates prevents tech debt accumulation |
 | Fuzz testing | Policy parser + proxy handlers | Skip fuzzing | Security-critical input parsing benefits disproportionately from fuzzing |
+| Stack license | Apache 2.0 on runtime + website, BSL 1.1 on platform + app | All-Apache or all-BSL | Runtime needs maximum adoption (OSS-only procurement gates, distro packaging, no CLA); platform / app need protection from competing hosted clones. Apache 2.0 chosen for runtime over MIT for patent grant + retaliation + trademark clause. |
+| Trust-network split | Mediation transport in `therelic` (Apache), registry + scoring + marketplace in `therelic-platform` (BSL) | Single repo or single license | Protocol must be open to become an interoperability standard; operations stay BSL so no competing hosted marketplace can clone the network effect |
+| Policy authority direction | Agent pulls from control plane (`relic policy pull`) | Control plane pushes to agent | Agents are intermittently online; pull model works behind NAT/firewalls; same model as `git pull`, `apt update` |
 
 ### 11.5 Trace Format Version
 

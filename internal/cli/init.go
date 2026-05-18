@@ -10,8 +10,8 @@ import (
 )
 
 // starterPolicy is the default .tr/policy.yaml written by `relic init`.
-// It uses permissive mode so developers can run agents immediately without
-// writing any rules — the trace shows what would have been denied.
+// It uses audit mode so developers can run agents immediately while
+// flagging denied actions in the trace for review.
 const starterPolicy = `version: "1"
 
 agent:
@@ -22,7 +22,7 @@ agent:
 #   permissive — allow the action, record it as "would_deny" in the trace
 #   audit      — allow the action, record it as "audit_deny" in the trace
 #   enforce    — block the action, return an error to the agent
-mode: permissive
+mode: audit
 
 # Default decision when no rule matches.
 default: deny
@@ -45,7 +45,7 @@ redaction:
     - Cookie
 
 # Rules evaluated top-to-bottom. First match wins.
-# Uncomment and edit to allow specific tools.
+# Uncomment to allow specific tools, or add your own.
 rules: []
   # - id: allow-web-search
   #   protocol: mcp
@@ -53,26 +53,51 @@ rules: []
   #   target: "web_search"
   #   action: allow
 
-  # - id: allow-web-fetch
+  # - id: allow-read-files
   #   protocol: mcp
   #   method: tool_call
-  #   target: "web_fetch"
+  #   target: "{read_file,list_directory,search_files}"
   #   action: allow
 
   # - id: deny-shell
   #   protocol: mcp
   #   method: tool_call
-  #   target: "{shell,execute_command,run_script}"
+  #   target: "{shell,execute_command,run_script,bash}"
+  #   action: deny
+
+  # - id: deny-send-external
+  #   protocol: mcp
+  #   method: tool_call
+  #   target: "{send_email,send_message,webhook}"
   #   action: deny
 
 constraints:
   max_actions: 1000
   max_duration_seconds: 3600
 
-# --- Zero-Trust Extensions (uncomment to enable) ---
+# --- Security Extensions (uncomment to enable) ---
+
+# Exfiltration guard — detect sensitive data in outbound URLs.
+# exfiltration:
+#   enabled: true
+#   max_query_entropy: 4.5
+#   min_value_length: 16
+#   block_action: deny
+
+# Sequence detection — block suspicious multi-step tool patterns.
+# sequences:
+#   window: 10
+#   rules:
+#     - id: fetch-read-send
+#       pattern: ["web_fetch", "read_file|list_directory", "send_email|send_message"]
+#       reason: "fetched external content, read files, then sent data externally"
+#       action: deny
+#     - id: fetch-then-send
+#       pattern: ["web_fetch", "send_email|send_message|webhook"]
+#       reason: "fetched external content then immediately sent data"
+#       action: deny
 
 # Require a valid ed25519 signature on this policy file.
-# Use 'relic keygen' to generate a keypair and 'relic policy sign' to sign.
 # signature_required: true
 
 # Filesystem sandbox — restrict agent file access to explicit mounts.
@@ -81,10 +106,10 @@ constraints:
 #   mounts:
 #     - source: ./data
 #       target: data
-#       mode: ro           # read-only
+#       mode: ro
 #     - source: ./output
 #       target: output
-#       mode: rw           # read-write
+#       mode: rw
 #   deny_patterns:
 #     - "**/.env"
 #     - "**/credentials*"
@@ -113,6 +138,16 @@ servers: []
   #   command: "npx"
   #   args: ["-y", "@modelcontextprotocol/server-filesystem", "/data"]
 
+  # stdio transport with integrity verification:
+  # - name: filesystem
+  #   transport: stdio
+  #   command: "npx"
+  #   args: ["-y", "@modelcontextprotocol/server-filesystem", "/data"]
+  #   integrity:
+  #     sha256: "abc123..."   # run: relic server hash <command>
+  #     publisher: "modelcontextprotocol"
+  #     required: false       # true = refuse to start if hash doesn't match
+
   # HTTP+SSE transport example:
   # - name: web-search
   #   transport: sse
@@ -128,7 +163,7 @@ func newInitCmd() *cobra.Command {
 		Long: `Create the .tr/ directory with a starter policy and MCP configuration.
 
   .tr/
-  ├── policy.yaml   # Starter policy (permissive mode)
+  ├── policy.yaml   # Starter policy (audit mode)
   ├── mcp.yaml      # MCP server configuration
   └── traces/       # Run traces are stored here
 
