@@ -7,7 +7,7 @@ governs every tool call. It is Apache-2.0–licensed and built to be hackable.
 This document covers how to file issues, propose changes, and get a patch
 merged in this repository. The control plane (`therelic-platform`) and
 dashboard (`therelic-app`) live in separate repositories under the
-**Business Source License 1.1**; they accept contributions but the
+**Apache License 2.0**; they accept contributions under the same
 contribution terms there are different (BSL releases convert to Apache 2.0
 after four years; contributing to a BSL repo means your contribution is
 BSL until the Change Date for the file it lands in). See those repos'
@@ -119,7 +119,7 @@ a fuzz target.
 
 The split is by concern *and* by license:
 
-| Belongs in this repo (Apache 2.0) | Belongs in `therelic-platform` (BSL 1.1) | Belongs in `therelic-app` (BSL 1.1) |
+| Belongs in this repo (Apache 2.0) | Belongs in `therelic-platform` (Apache 2.0) | Belongs in `therelic-app` (Apache 2.0) |
 |---|---|---|
 | Mediation engine, policy engine, trace writer | Trace storage, S3, Postgres | Web dashboard, trace viewer UI |
 | MCP proxy, HTTP logger | Org/user management, API keys | Proposals UI, policy editor |

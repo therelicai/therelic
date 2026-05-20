@@ -95,8 +95,8 @@ The Relic stack is split across two licenses on purpose:
 |---|---|---|
 | `therelic` (this repo — runtime + CLI) | **Apache License 2.0** | Maximum adoption. The runtime is the wedge — every governed Claude / OpenClaw / LangChain agent has it on the host. OSI-approved, in `apt`/`brew`/`yum`, no procurement gates, no CLA. Patent grant + patent-retaliation + explicit trademark clause. |
 | `therelic-website` (marketing) | **Apache License 2.0** | Same posture. Static site has no competitive moat; openness is the lower-friction default. |
-| `therelic-platform` (control plane + governance worker) | **Business Source License 1.1** | Source-available, self-hostable for any purpose under the Additional Use Grant — including internal production use, embedding in non-competing products, and customer self-hosted deployments. The grant prohibits offering a competing hosted **Governance Service**. Each released file converts to Apache 2.0 four years after publication. |
-| `therelic-app` (dashboard) | **Business Source License 1.1** | Same Additional Use Grant. Same Change Date / Change License. |
+| `therelic-platform` (control plane + governance worker) | **Apache License 2.0** | Use, modify, fork, and redistribute for any purpose including running a competing hosted service. Trademarks reserved separately. |
+| `therelic-app` (dashboard) | **Apache License 2.0** | Same terms as the control plane. |
 
 The business model does not depend on the runtime being closed; it depends
 on the **hosted product** at `therelic.dev` plus **services revenue**
@@ -1547,7 +1547,7 @@ The `no_proxy` variable is also cleared to prevent agents from bypassing the HTT
 | Env hardening scope | Strip proxy/TLS/injection/spoofing vars | Full env whitelist | Whitelist breaks too many agent workflows; targeted stripping handles known attack vectors |
 | CI quality gates | lint + test + vulncheck + coverage | Test only | Early adoption of quality gates prevents tech debt accumulation |
 | Fuzz testing | Policy parser + proxy handlers | Skip fuzzing | Security-critical input parsing benefits disproportionately from fuzzing |
-| Stack license | Apache 2.0 on runtime + website, BSL 1.1 on platform + app | All-Apache or all-BSL | Runtime needs maximum adoption (OSS-only procurement gates, distro packaging, no CLA); platform / app need protection from competing hosted clones. Apache 2.0 chosen for runtime over MIT for patent grant + retaliation + trademark clause. |
+| Stack license | Apache 2.0 on all four repos | Mixed BSL + Apache, or all-MIT | All-Apache lowers adoption friction (enterprise legal teams know Apache; BSL spooks them) and matches the OSS-first posture. Trademarks reserved separately so brand confusion stays addressable. Initial mixed-license plan (BSL on platform/app) was replaced 2026-05-19. |
 | Trust-network split | Mediation transport in `therelic` (Apache), registry + scoring + marketplace in `therelic-platform` (BSL) | Single repo or single license | Protocol must be open to become an interoperability standard; operations stay BSL so no competing hosted marketplace can clone the network effect |
 | Policy authority direction | Agent pulls from control plane (`relic policy pull`) | Control plane pushes to agent | Agents are intermittently online; pull model works behind NAT/firewalls; same model as `git pull`, `apt update` |
 
